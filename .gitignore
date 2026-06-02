@@ -1,0 +1,7 @@
+/target
+.env
+config/packages.toml
+node_modules/
+dist/
+
+.agents
