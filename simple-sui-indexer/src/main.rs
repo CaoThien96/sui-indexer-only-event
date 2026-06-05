@@ -1,7 +1,8 @@
 mod handlers;
 mod models;
+mod prefix;
 
-use handlers::TransactionDigestHandler;
+use handlers::EventTypeHandler;
 
 pub mod schema;
 
@@ -10,13 +11,53 @@ use clap::Parser;
 use diesel_migrations::{EmbeddedMigrations, embed_migrations};
 use sui_indexer_alt_framework::{
     cluster::{Args, IndexerCluster},
-    pipeline::sequential::SequentialConfig,
+    pipeline::{CommitterConfig, sequential::SequentialConfig},
     service::Error,
 };
 use tracing::info;
 use url::Url;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
+const COLLECT_INTERVAL_MS: u64 = 100;
+
+fn sequential_config() -> SequentialConfig {
+    SequentialConfig {
+        committer: CommitterConfig {
+            collect_interval_ms: COLLECT_INTERVAL_MS,
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+fn parse_event_type_prefixes() -> Result<Vec<String>> {
+    let raw = std::env::var("EVENT_TYPE_PREFIXES").map_err(|_| {
+        anyhow::anyhow!(
+            "EVENT_TYPE_PREFIXES must be set (comma-separated Move event type prefixes)"
+        )
+    })?;
+
+    let prefixes: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .collect();
+
+    if prefixes.is_empty() {
+        bail!("EVENT_TYPE_PREFIXES is empty after parsing; provide at least one prefix");
+    }
+
+    for prefix in &prefixes {
+        if !prefix.contains("::") {
+            bail!(
+                "Invalid prefix '{prefix}': each prefix must contain '::' (e.g. 0xabc:: or 0xabc::pool)"
+            );
+        }
+    }
+
+    Ok(prefixes)
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -29,6 +70,12 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     info!("Parsed CLI arguments and initialized runtime");
+    let event_type_prefixes = parse_event_type_prefixes()?;
+    info!(
+        event_type_prefix_count = event_type_prefixes.len(),
+        event_type_prefixes = ?event_type_prefixes,
+        "Loaded EVENT_TYPE_PREFIXES configuration"
+    );
 
     let mut cluster = IndexerCluster::builder()
         .with_args(args)
@@ -38,10 +85,19 @@ async fn main() -> Result<()> {
         .await?;
     info!("Indexer cluster initialized");
 
+    let pipeline_config = sequential_config();
+    info!(
+        collect_interval_ms = COLLECT_INTERVAL_MS,
+        "Using sequential pipeline config"
+    );
+
     cluster
-        .sequential_pipeline(TransactionDigestHandler, SequentialConfig::default())
+        .sequential_pipeline(
+            EventTypeHandler::new(event_type_prefixes),
+            pipeline_config,
+        )
         .await?;
-    info!("Sequential pipeline registered, indexer is starting");
+    info!("Event prefix pipeline registered, indexer is starting");
 
     match cluster.run().await?.main().await {
         Ok(()) | Err(Error::Terminated) => {

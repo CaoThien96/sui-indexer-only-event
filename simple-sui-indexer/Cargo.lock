@@ -1630,6 +1630,7 @@ dependencies = [
  "itoa",
  "pq-sys",
  "r2d2",
+ "serde_json",
 ]
 
 [[package]]
@@ -5215,6 +5216,7 @@ dependencies = [
  "diesel-async",
  "diesel_migrations",
  "dotenvy",
+ "serde_json",
  "sui-indexer-alt-framework",
  "tokio",
  "tracing",

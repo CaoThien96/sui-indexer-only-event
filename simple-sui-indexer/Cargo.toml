@@ -7,7 +7,7 @@ edition = "2024"
 sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", branch = "mainnet" }
 tokio = { version = "1.0", features = ["full"] }
 anyhow = "1.0"
-diesel = { version = "2.3", features = ["postgres", "r2d2"] }
+diesel = { version = "2.3", features = ["postgres", "r2d2", "serde_json"] }
 diesel-async = { version = "0.8", features = ["bb8", "postgres", "async-connection-wrapper"] }
 diesel_migrations = "2.3"
 async-trait = "0.1"
@@ -16,3 +16,4 @@ dotenvy = "0.15"
 clap = { version = "4.0", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+serde_json = "1.0"

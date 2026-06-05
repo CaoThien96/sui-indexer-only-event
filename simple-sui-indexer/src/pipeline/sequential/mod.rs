@@ -30,7 +30,7 @@ pub trait Handler: Processor {
     /// Maximum number of checkpoints to try and write in a single batch. The larger this number
     /// is, the more chances the pipeline has to merge redundant writes, but the longer each write
     /// transaction is likely to be.
-    const MAX_BATCH_CHECKPOINTS: usize = 5 * 60;
+    const MAX_BATCH_CHECKPOINTS: usize = 10;
 
     /// A type to combine multiple `Self::Value`-s into. This can be used to avoid redundant writes
     /// by combining multiple rows into one (e.g. if one row supersedes another, the latter can be

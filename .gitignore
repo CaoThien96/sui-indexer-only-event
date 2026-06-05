@@ -5,3 +5,7 @@ node_modules/
 dist/
 
 .agents
+**/indexer.log
+**/indexer.pid
+indexer.log
+indexer.pid
