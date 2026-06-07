@@ -1,0 +1,17 @@
+[package]
+name = "event-bindings"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+bcs = "0.1"
+move-binding-derive = { path = "../vendor/move-binding/move-binding-derive" }
+move-types = { path = "../vendor/move-binding/move-types" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[patch."https://github.com/MystenLabs/move-binding"]
+move-binding = { path = "../vendor/move-binding/move-binding" }
+move-binding-derive = { path = "../vendor/move-binding/move-binding-derive" }
+move-types = { path = "../vendor/move-binding/move-types" }

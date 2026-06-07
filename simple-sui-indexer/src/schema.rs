@@ -14,6 +14,7 @@ diesel::table! {
         timestamp_ms -> Nullable<Int8>,
         bcs -> Bytea,
         json -> Jsonb,
+        parsed_json -> Nullable<Jsonb>,
     }
 }
 
@@ -24,18 +25,4 @@ diesel::table! {
     }
 }
 
-diesel::table! {
-    watermarks (pipeline) {
-        pipeline -> Text,
-        epoch_hi_inclusive -> Int8,
-        checkpoint_hi_inclusive -> Int8,
-        tx_hi -> Int8,
-        timestamp_ms_hi_inclusive -> Int8,
-        reader_lo -> Int8,
-        pruner_timestamp -> Timestamp,
-        pruner_hi -> Int8,
-        chain_id -> Nullable<Bytea>,
-    }
-}
-
-diesel::allow_tables_to_appear_in_same_query!(package_events, transaction_digests, watermarks,);
+diesel::allow_tables_to_appear_in_same_query!(package_events, transaction_digests,);

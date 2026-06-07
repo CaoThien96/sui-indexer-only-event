@@ -18,4 +18,5 @@ pub struct StoredPackageEvent {
     pub timestamp_ms: Option<i64>,
     pub bcs: Vec<u8>,
     pub json: Value,
+    pub parsed_json: Option<Value>,
 }

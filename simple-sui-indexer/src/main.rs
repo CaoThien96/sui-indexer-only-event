@@ -1,6 +1,7 @@
 mod handlers;
 mod models;
 mod prefix;
+mod static_event_decode;
 
 use handlers::EventTypeHandler;
 

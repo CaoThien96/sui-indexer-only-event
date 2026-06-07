@@ -13,22 +13,10 @@ pub fn row_to_sui_event(row: &PackageEventRow) -> Value {
         "transactionModule": row.transaction_module,
         "sender": row.sender,
         "type": row.event_type,
-        "parsedJson": extract_parsed_json(&row.json),
+        "parsedJson": row.parsed_json.clone().unwrap_or(Value::Null),
         "bcs": STANDARD.encode(&row.bcs),
         "timestampMs": row.timestamp_ms.map(|ms| ms.to_string()),
     })
-}
-
-/// Indexer stores the raw framework event JSON (type_, contents bytes, etc.).
-/// Fullnode returns decoded Move fields in `parsedJson`; we don't have that in DB yet.
-fn extract_parsed_json(stored: &Value) -> Value {
-    if stored.get("parsedJson").is_some() {
-        return stored
-            .get("parsedJson")
-            .cloned()
-            .unwrap_or(Value::Null);
-    }
-    Value::Null
 }
 
 pub fn build_query_events_result(rows: Vec<PackageEventRow>, limit: u64) -> Value {
@@ -69,6 +57,7 @@ mod tests {
             timestamp_ms: Some(1_234_567_890),
             bcs: vec![1, 2, 3],
             json: json!({ "sender": "0xsender" }),
+            parsed_json: Some(json!({ "pool": "0xpool", "amount_in": "100" })),
         };
 
         let event = row_to_sui_event(&row);
@@ -76,7 +65,7 @@ mod tests {
         assert_eq!(event["id"]["eventSeq"], "2");
         assert_eq!(event["bcs"], "AQID");
         assert_eq!(event["timestampMs"], "1234567890");
-        assert!(event["parsedJson"].is_null());
+        assert_eq!(event["parsedJson"]["pool"], "0xpool");
     }
 
     #[test]
@@ -93,6 +82,7 @@ mod tests {
                 timestamp_ms: None,
                 bcs: vec![],
                 json: json!(null),
+                parsed_json: None,
             },
             PackageEventRow {
                 event_id_tx_digest: "b".into(),
@@ -105,6 +95,7 @@ mod tests {
                 timestamp_ms: None,
                 bcs: vec![],
                 json: json!(null),
+                parsed_json: None,
             },
         ];
 

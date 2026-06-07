@@ -7,6 +7,7 @@ use sui_indexer_alt_framework::types::full_checkpoint_content::Checkpoint;
 use crate::models::StoredPackageEvent;
 use crate::prefix::matches_any_prefix;
 use crate::schema::package_events::dsl::{event_id_seq, event_id_tx_digest, package_events};
+use crate::static_event_decode;
 use diesel_async::RunQueryDsl;
 use sui_indexer_alt_framework::{
     pipeline::sequential::Handler,
@@ -61,6 +62,10 @@ impl Processor for EventTypeHandler {
                     let transaction_module_name = Some(event.transaction_module.to_string());
 
                     matched_events += 1;
+                    let parsed_json = Some(static_event_decode::decode_parsed_json(
+                        &event_type_str,
+                        &event.contents,
+                    )?);
                     rows.push(StoredPackageEvent {
                         event_id_tx_digest: tx_digest.clone(),
                         event_id_seq: event_idx as i64,
@@ -74,6 +79,7 @@ impl Processor for EventTypeHandler {
                         timestamp_ms: checkpoint_timestamp_ms,
                         bcs: event.contents.clone(),
                         json: serde_json::to_value(event).unwrap_or(Value::Null),
+                        parsed_json,
                     });
                 }
             }

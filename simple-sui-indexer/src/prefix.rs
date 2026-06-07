@@ -18,6 +18,19 @@ pub fn matches_any_prefix(event_type: &str, prefixes: &[String]) -> bool {
         .any(|prefix| matches_prefix(event_type, prefix))
 }
 
+/// Extracts unique package IDs (the address before the first `::`) from event type prefixes.
+pub fn package_ids_from_prefixes(prefixes: &[String]) -> Vec<String> {
+    let mut package_ids = std::collections::BTreeSet::new();
+    for prefix in prefixes {
+        if let Some(package_id) = prefix.split("::").next() {
+            if !package_id.is_empty() {
+                package_ids.insert(package_id.to_string());
+            }
+        }
+    }
+    package_ids.into_iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +85,23 @@ mod tests {
         assert!(!matches_prefix(
             &format!("{PKG}::pool::BurnEvent"),
             &event_prefix
+        ));
+    }
+
+    #[test]
+    fn package_ids_from_prefixes_deduplicates() {
+        let prefixes = vec![
+            format!("{PKG}::pool"),
+            format!("{PKG}::pool::SwapEvent"),
+            PKG_PREFIX.to_string(),
+            "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::".to_string(),
+        ];
+
+        let ids = package_ids_from_prefixes(&prefixes);
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&PKG.to_string()));
+        assert!(ids.contains(
+            &"0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1".to_string()
         ));
     }
 

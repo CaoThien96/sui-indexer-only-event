@@ -234,7 +234,7 @@ fn build_sql(params: &QueryEventsParams) -> (String, usize) {
 
     let sql = format!(
         "SELECT event_id_tx_digest, event_id_seq, checkpoint_sequence_number, \
-         package_id, transaction_module, event_type, sender, timestamp_ms, bcs, json \
+         package_id, transaction_module, event_type, sender, timestamp_ms, bcs, json, parsed_json \
          FROM package_events \
          WHERE {filter_clause} {cursor_clause} \
          {order_clause} \

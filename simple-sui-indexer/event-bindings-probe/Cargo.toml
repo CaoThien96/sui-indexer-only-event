@@ -1,0 +1,17 @@
+[package]
+name = "event-bindings-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+move-binding-derive = { git = "https://github.com/MystenLabs/move-binding" }
+move-types = { git = "https://github.com/MystenLabs/move-binding" }
+sui-transaction-builder = { git = "https://github.com/mystenlabs/sui-rust-sdk", rev = "f0c8068" }
+bcs = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+
+[patch."https://github.com/MystenLabs/move-binding"]
+move-binding = { path = "../vendor/move-binding/move-binding" }
+move-binding-derive = { path = "../vendor/move-binding/move-binding-derive" }
+move-types = { path = "../vendor/move-binding/move-types" }
