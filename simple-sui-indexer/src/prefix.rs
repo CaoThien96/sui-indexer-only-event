@@ -1,14 +1,24 @@
+/// Returns true when `haystack` starts with `needle`, ASCII case-insensitive.
+fn starts_with_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack
+        .get(..needle.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(needle))
+}
+
 /// Returns true when `event_type` matches the given Move event type prefix.
 ///
 /// Prefix forms:
 /// - Package-level (ends with `::`): matches all events in the package.
 /// - Module/event-level (no trailing `::`): boundary-safe match so `pool`
 ///   matches `pool::SwapEvent` but not `pool_factory::CreateEvent`.
+///
+/// Matching is ASCII case-insensitive so env prefixes work with canonical on-chain casing.
 pub fn matches_prefix(event_type: &str, prefix: &str) -> bool {
     if prefix.ends_with("::") {
-        event_type.starts_with(prefix)
+        starts_with_ignore_ascii_case(event_type, prefix)
     } else {
-        event_type == prefix || event_type.starts_with(&format!("{prefix}::"))
+        event_type.eq_ignore_ascii_case(prefix)
+            || starts_with_ignore_ascii_case(event_type, &format!("{prefix}::"))
     }
 }
 
@@ -85,6 +95,16 @@ mod tests {
         assert!(!matches_prefix(
             &format!("{PKG}::pool::BurnEvent"),
             &event_prefix
+        ));
+    }
+
+    #[test]
+    fn module_prefix_matches_case_insensitively() {
+        let module_prefix = format!("{PKG}::POOL");
+
+        assert!(matches_prefix(
+            &format!("{PKG}::pool::SwapEvent"),
+            &module_prefix
         ));
     }
 

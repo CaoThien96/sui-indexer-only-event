@@ -57,7 +57,12 @@ async fn handle_query_events(pool: &PgPool, id: Value, params: Option<&Value>) -
         .await
         .map_err(|e| {
             error!(error = %e, "database query failed");
-            internal_error(id.clone(), "database query failed")
+            let message = e.to_string();
+            if message.starts_with("cursor event not found:") {
+                invalid_params(id.clone(), message)
+            } else {
+                internal_error(id.clone(), "database query failed")
+            }
         })?;
 
     let result = build_query_events_result(rows, limit);

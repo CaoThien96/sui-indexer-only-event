@@ -75,8 +75,8 @@ impl Config {
         })
     }
 
-    pub fn indexer_event_type(&self) -> String {
-        self.move_event_type.to_ascii_lowercase()
+    pub fn indexer_event_type(&self) -> &str {
+        &self.move_event_type
     }
 
     pub fn start_time_ms(&self) -> i64 {

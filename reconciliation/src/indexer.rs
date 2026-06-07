@@ -14,7 +14,7 @@ pub async fn count_events_in_window(
 ) -> Result<i64> {
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)::bigint FROM package_events \
-         WHERE event_type = $1 \
+         WHERE event_type ILIKE $1 \
            AND timestamp_ms >= $2 \
            AND timestamp_ms <= $3",
     )
@@ -35,7 +35,7 @@ pub async fn list_event_keys_in_window(
 ) -> Result<HashSet<EventKey>> {
     let rows: Vec<(String, i64)> = sqlx::query_as(
         "SELECT event_id_tx_digest, event_id_seq FROM package_events \
-         WHERE event_type = $1 \
+         WHERE event_type ILIKE $1 \
            AND timestamp_ms >= $2 \
            AND timestamp_ms <= $3",
     )

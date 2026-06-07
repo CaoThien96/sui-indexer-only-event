@@ -288,7 +288,7 @@ psql postgres://postgres:postgres@localhost:5432/sui_indexer -c \
    ORDER BY cnt DESC
    LIMIT 20;"
 
-# Turbos PoolCreatedEvent (stored lowercase)
+# Turbos PoolCreatedEvent (canonical event type casing)
 psql postgres://postgres:postgres@localhost:5432/sui_indexer -c \
   "SELECT COUNT(*) FROM package_events
    WHERE event_type LIKE '%pool_factory%poolcreatedevent%';"
@@ -332,7 +332,7 @@ export RUST_LOG=info
 cargo run --release -- \
   --remote-store-url https://checkpoints.mainnet.sui.io \
   --streaming-url https://fullnode.mainnet.sui.io:443 \
-  --first-checkpoint 283755015
+  --first-checkpoint 284237164
 ```
 
 If a watermark already exists, `--first-checkpoint` is **ignored**. Reset the DB first (see above) to use it.
@@ -384,7 +384,7 @@ echo $! > indexer.pid
 nohup ./target/release/simple-sui-indexer \
   --remote-store-url https://checkpoints.mainnet.sui.io \
   --streaming-url https://fullnode.mainnet.sui.io:443 \
-  --first-checkpoint 284115449 \
+  --first-checkpoint 284237164 \
   > indexer.log 2>&1 &
 
 echo $! > indexer.pid
@@ -546,7 +546,77 @@ curl -s -X POST http://127.0.0.1:9000/ \
   }' | python3 -m json.tool
 ```
 
-> Indexer stores event types in **lowercase**. Fullnode filters use **canonical casing** (`SwapEvent`).
+> `event_type` is stored in **canonical Move casing** (same as fullnode `type`, e.g. `SwapEvent`).
+
+**Page 2+** — pass `nextCursor` from the previous response as param `[1]`:
+
+```bash
+curl -s -X POST http://127.0.0.1:9000/ \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "suix_queryEvents",
+    "params": [
+      {"MoveEventType": "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::SwapEvent"},
+      {"txDigest": "Zy26oz2EE8nHZicStDjaxwfEYjPYQEz1J7F12ocibsK", "eventSeq": "10"},
+      5,
+      true
+    ]
+  }' | python3 -m json.tool
+```
+
+Params: `[filter, cursor, limit, descending]`. With `descending: true`, results are **older than** the cursor in on-chain stream order (`checkpoint → tx index → event index`).
+
+### Restore canonical `event_type` on existing DB
+
+```bash
+cd simple-sui-indexer
+diesel migration run   # applies 2026-06-07-120000-0000_restore_canonical_event_type
+```
+
+Backfills from the indexed event JSON (`json->>'type'`). New rows from the indexer already store canonical casing.
+
+**Fullnode parity notes** (intentional differences):
+
+| Topic | Fullnode mainnet | This RPC |
+|-------|------------------|----------|
+| Pagination order | Stream position | Same (after fix) |
+| `type` field casing | Canonical (`SwapEvent`) | Same (canonical Move casing) |
+| Filters | All, TimeRange, Transaction, … | Only `MoveEventType`, `MoveModule`, `MoveEventModule`, `Sender` |
+| Data scope | All on-chain events | Only indexed prefix packages |
+| `parsedJson` | Fullnode decode | Static BCS bindings (`event-bindings/`) |
+| Sync lag | Live chain tip | Indexer watermark — may trail fullnode |
+| Unknown cursor | Fullnode error | `-32602` if `(txDigest, eventSeq)` not in DB |
+| `packageId` casing | Lowercase hex | Lowercase hex (unchanged) |
+
+### Test ASC pagination order
+
+Automated check: paginate RPC with `descending=false`, load `(checkpoint, tx_index, event_index)` from DB for each event, assert strictly increasing within and across pages.
+
+```bash
+# rpc-service + postgres must be running
+chmod +x scripts/test-query-events-asc-order.sh
+./scripts/test-query-events-asc-order.sh
+
+# Custom filter / fewer pages
+MOVE_EVENT_TYPE='0x91bf...::pool::SwapEvent' LIMIT=20 MAX_PAGES=3 ./scripts/test-query-events-asc-order.sh
+
+# Also compare event-id order with fullnode (fails if indexer lags)
+COMPARE_FULLNODE=1 ./scripts/test-query-events-asc-order.sh
+```
+
+Manual SQL sanity check (oldest first):
+
+```bash
+psql postgres://postgres:postgres@localhost:5432/sui_indexer -c "
+  SELECT event_id_tx_digest, event_id_seq,
+         checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction
+  FROM package_events
+  WHERE event_type ILIKE '0x1eab%::pool::SwapEvent'
+  ORDER BY checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction
+  LIMIT 10;"
+```
 
 ---
 
@@ -599,6 +669,12 @@ curl -s -X POST https://fullnode.mainnet.sui.io:443 \
 curl -s -X POST https://fullnode.mainnet.sui.io:443 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":1,"method":"suix_queryEvents","params":[{"MoveEventType":"0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool_factory::PoolCreatedEvent"},null,5,true]}' \
+  | python3 -m json.tool
+
+
+curl -s -X POST https://fullnode.mainnet.sui.io:443 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"suix_queryEvents","params":[{"MoveEventType":"0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::SwapEvent"},null,5,true]}' \
   | python3 -m json.tool
 ```
 

@@ -53,64 +53,121 @@ macro_rules! decode_arm {
     }};
 }
 
+macro_rules! decode_if_type {
+    ($event_type:expr, $bcs:expr, $canonical:literal, $ty:ty) => {
+        if $event_type.eq_ignore_ascii_case($canonical) {
+            return decode_arm!($bcs, $ty);
+        }
+    };
+}
+
 /// Decode event BCS bytes into JSON matching fullnode `parsedJson` shape.
 pub fn decode_parsed_json(event_type: &str, bcs: &[u8]) -> Result<Value> {
-    match event_type {
-        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::swapevent" => {
-            decode_arm!(bcs, pkg_1eab::pool::SwapEvent)
-        }
-        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::collectfeeevent" => {
-            decode_arm!(bcs, pkg_1eab::pool::CollectFeeEvent)
-        }
-        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::openpositionevent" => {
-            decode_arm!(bcs, pkg_1eab::pool::OpenPositionEvent)
-        }
-        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::closepositionevent" => {
-            decode_arm!(bcs, pkg_1eab::pool::ClosePositionEvent)
-        }
-        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::addliquidityevent" => {
-            decode_arm!(bcs, pkg_1eab::pool::AddLiquidityEvent)
-        }
-        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::removeliquidityevent" => {
-            decode_arm!(bcs, pkg_1eab::pool::RemoveLiquidityEvent)
-        }
-        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::collectprotocolfeeevent" => {
-            decode_arm!(bcs, pkg_1eab::pool::CollectProtocolFeeEvent)
-        }
-        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::partner::receivereffeeevent" => {
-            decode_arm!(bcs, pkg_1eab::partner::ReceiveRefFeeEvent)
-        }
-        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::partner::claimreffeeevent" => {
-            decode_arm!(bcs, pkg_1eab::partner::ClaimRefFeeEvent)
-        }
-        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::factory::createpoolevent" => {
-            decode_arm!(bcs, pkg_1eab::factory::CreatePoolEvent)
-        }
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::SwapEvent",
+        pkg_1eab::pool::SwapEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::CollectFeeEvent",
+        pkg_1eab::pool::CollectFeeEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::OpenPositionEvent",
+        pkg_1eab::pool::OpenPositionEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::ClosePositionEvent",
+        pkg_1eab::pool::ClosePositionEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::AddLiquidityEvent",
+        pkg_1eab::pool::AddLiquidityEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::RemoveLiquidityEvent",
+        pkg_1eab::pool::RemoveLiquidityEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::CollectProtocolFeeEvent",
+        pkg_1eab::pool::CollectProtocolFeeEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::partner::ReceiveRefFeeEvent",
+        pkg_1eab::partner::ReceiveRefFeeEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::partner::ClaimRefFeeEvent",
+        pkg_1eab::partner::ClaimRefFeeEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::factory::CreatePoolEvent",
+        pkg_1eab::factory::CreatePoolEvent
+    );
 
-        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::swapevent" => {
-            decode_arm!(bcs, pkg_91bf::pool::SwapEvent)
-        }
-        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::burnevent" => {
-            decode_arm!(bcs, pkg_91bf::pool::BurnEvent)
-        }
-        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::mintevent" => {
-            decode_arm!(bcs, pkg_91bf::pool::MintEvent)
-        }
-        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::collectprotocolfeeevent" => {
-            decode_arm!(bcs, pkg_91bf::pool::CollectProtocolFeeEvent)
-        }
-        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::position_manager::increaseliquidityevent" => {
-            decode_arm!(bcs, pkg_91bf::position_manager::IncreaseLiquidityEvent)
-        }
-        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::position_manager::decreaseliquidityevent" => {
-            decode_arm!(bcs, pkg_91bf::position_manager::DecreaseLiquidityEvent)
-        }
-        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool_factory::poolcreatedevent" => {
-            decode_arm!(bcs, pkg_91bf::pool_factory::PoolCreatedEvent)
-        }
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::SwapEvent",
+        pkg_91bf::pool::SwapEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::BurnEvent",
+        pkg_91bf::pool::BurnEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::MintEvent",
+        pkg_91bf::pool::MintEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::CollectProtocolFeeEvent",
+        pkg_91bf::pool::CollectProtocolFeeEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::position_manager::IncreaseLiquidityEvent",
+        pkg_91bf::position_manager::IncreaseLiquidityEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::position_manager::DecreaseLiquidityEvent",
+        pkg_91bf::position_manager::DecreaseLiquidityEvent
+    );
+    decode_if_type!(
+        event_type,
+        bcs,
+        "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool_factory::PoolCreatedEvent",
+        pkg_91bf::pool_factory::PoolCreatedEvent
+    );
 
-        other => bail!("no static binding for event type: {other}"),
-    }
+    bail!("no static binding for event type: {event_type}")
 }
 
 #[cfg(test)]
@@ -131,7 +188,7 @@ mod tests {
     #[test]
     fn decode_cetus_swap_event_from_db_bcs() {
         let event_type =
-            "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::swapevent";
+            "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::SwapEvent";
         let parsed = decode_parsed_json(event_type, &hex_to_bytes(CETUS_SWAP_BCS)).unwrap();
         assert_eq!(parsed["atob"], false);
         assert_eq!(parsed["amount_in"], "258500000000");
@@ -139,9 +196,17 @@ mod tests {
     }
 
     #[test]
+    fn decode_accepts_legacy_lowercase_event_type() {
+        let event_type =
+            "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::swapevent";
+        let parsed = decode_parsed_json(event_type, &hex_to_bytes(CETUS_SWAP_BCS)).unwrap();
+        assert_eq!(parsed["amount_in"], "258500000000");
+    }
+
+    #[test]
     fn decode_turbos_swap_event_from_db_bcs() {
         let event_type =
-            "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::swapevent";
+            "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::SwapEvent";
         let parsed = decode_parsed_json(event_type, &hex_to_bytes(TURBOS_SWAP_BCS)).unwrap();
         assert_eq!(parsed["a_to_b"], true);
         assert_eq!(parsed["amount_a"], "41123949555");

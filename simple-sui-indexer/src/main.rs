@@ -42,7 +42,7 @@ fn parse_event_type_prefixes() -> Result<Vec<String>> {
         .split(',')
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase())
+        .map(str::to_string)
         .collect();
 
     if prefixes.is_empty() {

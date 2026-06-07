@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use sqlx::PgPool;
 
 use super::row::PackageEventRow;
@@ -6,10 +6,21 @@ use super::row::PackageEventRow;
 const DEFAULT_LIMIT: u64 = 50;
 const MAX_LIMIT: u64 = 50;
 
+/// Canonical on-chain event order (matches Sui fullnode stream position).
+const STREAM_ORDER_COLS: &str =
+    "checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction";
+
 #[derive(Debug, Clone)]
 pub struct EventIdCursor {
     pub tx_digest: String,
     pub event_seq: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EventStreamPosition {
+    pub checkpoint_sequence_number: i64,
+    pub transaction_sequence_in_checkpoint: i32,
+    pub event_sequence_in_transaction: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +127,7 @@ fn parse_event_filter(value: &serde_json::Value) -> Result<EventFilter> {
             let event_type = inner
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("MoveEventType must be a string"))?
-                .to_ascii_lowercase();
+                .to_string();
             Ok(EventFilter::MoveEventType(event_type))
         }
         "MoveModule" => {
@@ -151,9 +162,46 @@ fn field_str(value: &serde_json::Value, key: &str) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("missing or invalid '{key}'"))
 }
 
+async fn resolve_cursor_position(
+    pool: &PgPool,
+    cursor: &EventIdCursor,
+) -> Result<EventStreamPosition> {
+    let row = sqlx::query_as::<_, (i64, i32, i32)>(
+        "SELECT checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction \
+         FROM package_events \
+         WHERE event_id_tx_digest = $1 AND event_id_seq = $2",
+    )
+    .bind(&cursor.tx_digest)
+    .bind(cursor.event_seq)
+    .fetch_optional(pool)
+    .await
+    .context("failed to resolve cursor position")?;
+
+    row.map(|(checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction)| {
+        EventStreamPosition {
+            checkpoint_sequence_number,
+            transaction_sequence_in_checkpoint,
+            event_sequence_in_transaction,
+        }
+    })
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "cursor event not found: txDigest={} eventSeq={}",
+            cursor.tx_digest,
+            cursor.event_seq
+        )
+    })
+}
+
 pub async fn query_events(pool: &PgPool, params: QueryEventsParams) -> Result<Vec<PackageEventRow>> {
+    let cursor_position = if let Some(cursor) = &params.cursor {
+        Some(resolve_cursor_position(pool, cursor).await?)
+    } else {
+        None
+    };
+
     let fetch_limit = (params.limit + 1) as i64;
-    let (sql, bind_count) = build_sql(&params);
+    let (sql, bind_count) = build_sql(&params.filter, cursor_position.as_ref(), params.descending);
 
     let mut query = sqlx::query_as::<_, PackageEventRow>(&sql);
 
@@ -173,63 +221,63 @@ pub async fn query_events(pool: &PgPool, params: QueryEventsParams) -> Result<Ve
         }
     }
 
-    if let Some(cursor) = &params.cursor {
-        query = query.bind(&cursor.tx_digest).bind(cursor.event_seq);
+    if let Some(position) = &cursor_position {
+        query = query
+            .bind(position.checkpoint_sequence_number)
+            .bind(position.transaction_sequence_in_checkpoint)
+            .bind(position.event_sequence_in_transaction);
     }
 
     query = query.bind(fetch_limit);
 
-    debug_assert_eq!(bind_count, count_binds(&params));
+    debug_assert_eq!(bind_count, count_binds(&params.filter, cursor_position.is_some()));
 
     query.fetch_all(pool).await.map_err(Into::into)
 }
 
-fn count_binds(params: &QueryEventsParams) -> usize {
-    let filter_binds = 1 + match &params.filter {
+fn count_binds(filter: &EventFilter, has_cursor: bool) -> usize {
+    let filter_binds = 1 + match filter {
         EventFilter::MoveModule { .. } => 1,
         _ => 0,
     };
-    let cursor_binds = if params.cursor.is_some() { 2 } else { 0 };
+    let cursor_binds = if has_cursor { 3 } else { 0 };
     filter_binds + cursor_binds + 1
 }
 
-fn build_sql(params: &QueryEventsParams) -> (String, usize) {
-    let filter_clause = match &params.filter {
-        EventFilter::MoveEventType(_) => "event_type = $1",
+fn build_sql(
+    filter: &EventFilter,
+    cursor_position: Option<&EventStreamPosition>,
+    descending: bool,
+) -> (String, usize) {
+    let filter_clause = match filter {
+        EventFilter::MoveEventType(_) => "event_type ILIKE $1",
         EventFilter::MoveModule { .. } => "package_id = $1 AND transaction_module = $2",
         EventFilter::MoveEventModule { .. } => "event_type LIKE $1",
         EventFilter::Sender(_) => "sender = $1",
     };
 
-    let mut bind_idx = match &params.filter {
+    let mut bind_idx = match filter {
         EventFilter::MoveModule { .. } => 3,
         _ => 2,
     };
 
-    let cursor_clause = if params.cursor.is_some() {
-        let clause = if params.descending {
-            format!(
-                "AND (event_id_tx_digest, event_id_seq) < (${}, ${})",
-                bind_idx,
-                bind_idx + 1
-            )
-        } else {
-            format!(
-                "AND (event_id_tx_digest, event_id_seq) > (${}, ${})",
-                bind_idx,
-                bind_idx + 1
-            )
-        };
-        bind_idx += 2;
+    let cursor_clause = if let Some(_) = cursor_position {
+        let op = if descending { "<" } else { ">" };
+        let clause = format!(
+            "AND ({STREAM_ORDER_COLS}) {op} (${bind_idx}, ${}, ${})",
+            bind_idx + 1,
+            bind_idx + 2
+        );
+        bind_idx += 3;
         clause
     } else {
         String::new()
     };
 
-    let order_clause = if params.descending {
-        "ORDER BY event_id_tx_digest DESC, event_id_seq DESC"
+    let order_clause = if descending {
+        format!("ORDER BY {STREAM_ORDER_COLS} DESC")
     } else {
-        "ORDER BY event_id_tx_digest ASC, event_id_seq ASC"
+        format!("ORDER BY {STREAM_ORDER_COLS} ASC")
     };
 
     let sql = format!(
@@ -241,7 +289,10 @@ fn build_sql(params: &QueryEventsParams) -> (String, usize) {
          LIMIT ${bind_idx}"
     );
 
-    (sql, count_binds(params))
+    (
+        sql,
+        count_binds(filter, cursor_position.is_some()),
+    )
 }
 
 #[cfg(test)]
@@ -260,7 +311,7 @@ mod tests {
         .unwrap();
 
         match params.filter {
-            EventFilter::MoveEventType(t) => assert_eq!(t, "0xabc::pool::swapevent"),
+            EventFilter::MoveEventType(t) => assert_eq!(t, "0xabc::pool::SwapEvent"),
             _ => panic!("wrong filter"),
         }
         assert_eq!(params.limit, 10);
@@ -287,5 +338,55 @@ mod tests {
     fn rejects_unsupported_filter() {
         let err = parse_query_events_params(&json!([{ "All": [] }, null, 10, false])).unwrap_err();
         assert!(err.to_string().contains("not supported"));
+    }
+
+    #[test]
+    fn descending_sql_orders_by_stream_position_and_cursor() {
+        let filter = EventFilter::MoveEventType("0x1::pool::SwapEvent".into());
+        let cursor = EventStreamPosition {
+            checkpoint_sequence_number: 100,
+            transaction_sequence_in_checkpoint: 2,
+            event_sequence_in_transaction: 1,
+        };
+        let (sql, binds) = build_sql(&filter, Some(&cursor), true);
+
+        assert!(sql.contains(
+            "AND (checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction) < ($2, $3, $4)"
+        ));
+        assert!(sql.contains(
+            "ORDER BY checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction DESC"
+        ));
+        assert!(!sql.contains("event_id_tx_digest DESC"));
+        assert_eq!(binds, 5);
+    }
+
+    #[test]
+    fn ascending_sql_orders_forward_from_cursor() {
+        let filter = EventFilter::Sender("0xsender".into());
+        let cursor = EventStreamPosition {
+            checkpoint_sequence_number: 50,
+            transaction_sequence_in_checkpoint: 0,
+            event_sequence_in_transaction: 0,
+        };
+        let (sql, binds) = build_sql(&filter, Some(&cursor), false);
+
+        assert!(sql.contains(
+            "AND (checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction) > ($2, $3, $4)"
+        ));
+        assert!(sql.contains(
+            "ORDER BY checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction ASC"
+        ));
+        assert_eq!(binds, 5);
+    }
+
+    #[test]
+    fn first_page_has_no_cursor_clause() {
+        let filter = EventFilter::MoveEventType("0x1::pool::SwapEvent".into());
+        let (sql, binds) = build_sql(&filter, None, true);
+
+        assert!(!sql.contains("event_id_tx_digest DESC"));
+        assert!(!sql.contains("event_id_tx_digest ASC"));
+        assert!(sql.contains("ORDER BY checkpoint_sequence_number"));
+        assert_eq!(binds, 2);
     }
 }

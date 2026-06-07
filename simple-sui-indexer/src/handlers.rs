@@ -52,7 +52,7 @@ impl Processor for EventTypeHandler {
 
             if let Some(events) = &tx.events {
                 for (event_idx, event) in events.data.iter().enumerate() {
-                    let event_type_str = event.type_.to_string().to_ascii_lowercase();
+                    let event_type_str = event.type_.to_string();
 
                     if !matches_any_prefix(&event_type_str, &self.event_type_prefixes) {
                         continue;

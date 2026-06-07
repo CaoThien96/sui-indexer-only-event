@@ -52,7 +52,7 @@ mod tests {
             checkpoint_sequence_number: 100,
             package_id: "0xpkg".to_string(),
             transaction_module: Some("pool".to_string()),
-            event_type: "0xpkg::pool::swapevent".to_string(),
+            event_type: "0xpkg::pool::SwapEvent".to_string(),
             sender: Some("0xsender".to_string()),
             timestamp_ms: Some(1_234_567_890),
             bcs: vec![1, 2, 3],
