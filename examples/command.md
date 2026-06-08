@@ -169,7 +169,14 @@ Minimum `simple-sui-indexer/.env`:
 ```env
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/sui_indexer
 EVENT_TYPE_PREFIXES=0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::,0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::
+
+# Optional — Telegram alert when processor fails (missing binding, decode error, …)
+TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
+TELEGRAM_CHAT_ID=-1001234567890
+TELEGRAM_NOTIFY_COOLDOWN_SECS=300
 ```
+
+**Telegram setup:** create a bot via [@BotFather](https://t.me/BotFather), add it to your group/channel, send a message, then resolve chat id (e.g. `https://api.telegram.org/bot<token>/getUpdates`). Cooldown dedupes identical `pipeline + event_type + error` so framework retries do not spam the chat.
 
 ### 6. Run migrations & first build
 

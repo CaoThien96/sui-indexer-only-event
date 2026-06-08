@@ -5526,6 +5526,7 @@ dependencies = [
  "diesel_migrations",
  "dotenvy",
  "event-bindings",
+ "reqwest",
  "serde",
  "serde_json",
  "sui-indexer-alt-framework",

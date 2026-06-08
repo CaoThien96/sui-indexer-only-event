@@ -8,6 +8,7 @@ use crate::models::StoredPackageEvent;
 use crate::prefix::matches_any_prefix;
 use crate::schema::package_events::dsl::{event_id_seq, event_id_tx_digest, package_events};
 use crate::static_event_decode;
+use crate::telegram_notify;
 use diesel_async::RunQueryDsl;
 use sui_indexer_alt_framework::{
     pipeline::sequential::Handler,
@@ -62,10 +63,24 @@ impl Processor for EventTypeHandler {
                     let transaction_module_name = Some(event.transaction_module.to_string());
 
                     matched_events += 1;
-                    let parsed_json = Some(static_event_decode::decode_parsed_json(
+                    let parsed_json = match static_event_decode::decode_parsed_json(
                         &event_type_str,
                         &event.contents,
-                    )?);
+                    ) {
+                        Ok(parsed) => Some(parsed),
+                        Err(error) => {
+                            telegram_notify::notify_processor_error(
+                                Self::NAME,
+                                checkpoint_seq,
+                                &event_type_str,
+                                &tx_digest,
+                                event_idx,
+                                &error.to_string(),
+                            )
+                            .await;
+                            return Err(error);
+                        }
+                    };
                     rows.push(StoredPackageEvent {
                         event_id_tx_digest: tx_digest.clone(),
                         event_id_seq: event_idx as i64,

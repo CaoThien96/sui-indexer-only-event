@@ -2,6 +2,7 @@ mod handlers;
 mod models;
 mod prefix;
 mod static_event_decode;
+mod telegram_notify;
 
 use handlers::EventTypeHandler;
 
