@@ -1,6 +1,8 @@
 use anyhow::Result;
 use serde_json::Value;
 use std::sync::Arc;
+
+use crate::app_metrics::AppMetrics;
 use sui_indexer_alt_framework::pipeline::Processor;
 use sui_indexer_alt_framework::types::full_checkpoint_content::Checkpoint;
 
@@ -18,12 +20,14 @@ use tracing::{debug, info};
 
 pub struct EventTypeHandler {
     event_type_prefixes: Vec<String>,
+    app_metrics: Arc<AppMetrics>,
 }
 
 impl EventTypeHandler {
-    pub fn new(event_type_prefixes: Vec<String>) -> Self {
+    pub fn new(event_type_prefixes: Vec<String>, app_metrics: Arc<AppMetrics>) -> Self {
         Self {
             event_type_prefixes,
+            app_metrics,
         }
     }
 
@@ -63,12 +67,17 @@ impl Processor for EventTypeHandler {
                     let transaction_module_name = Some(event.transaction_module.to_string());
 
                     matched_events += 1;
+                    self.app_metrics.events_matched.inc();
                     let parsed_json = match static_event_decode::decode_parsed_json(
                         &event_type_str,
                         &event.contents,
                     ) {
                         Ok(parsed) => Some(parsed),
                         Err(error) => {
+                            self.app_metrics
+                                .decode_errors
+                                .with_label_values(&[&event_type_str])
+                                .inc();
                             telegram_notify::notify_processor_error(
                                 Self::NAME,
                                 checkpoint_seq,
@@ -130,6 +139,12 @@ impl Handler for EventTypeHandler {
             .do_nothing()
             .execute(conn)
             .await?;
+
+        if inserted > 0 {
+            self.app_metrics
+                .rows_inserted
+                .inc_by(inserted as u64);
+        }
 
         debug!(
             batch_size = batch.len(),

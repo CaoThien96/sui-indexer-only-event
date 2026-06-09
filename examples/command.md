@@ -178,6 +178,50 @@ TELEGRAM_NOTIFY_COOLDOWN_SECS=300
 
 **Telegram setup:** create a bot via [@BotFather](https://t.me/BotFather), add it to your group/channel, send a message, then resolve chat id (e.g. `https://api.telegram.org/bot<token>/getUpdates`). Cooldown dedupes identical `pipeline + event_type + error` so framework retries do not spam the chat.
 
+### Prometheus metrics (built-in + app)
+
+`sui-indexer-alt-framework` exposes **built-in** ingestion / pipeline / watermark / DB metrics on HTTP (default `http://0.0.0.0:9184/metrics`). This indexer registers **app counters** on the same endpoint.
+
+| Config | Default | Description |
+|--------|---------|-------------|
+| CLI `--metrics-address` | `0.0.0.0:9184` | Prometheus scrape bind address |
+| `METRICS_ADDRESS` | — | Env override for bind address |
+| `METRICS_PREFIX` | — | Prefix all framework metric names (e.g. `simple_sui_indexer_…`) |
+
+```bash
+# Scrape locally
+curl -s http://127.0.0.1:9184/metrics | head -40
+
+# Custom bind address
+METRICS_ADDRESS=127.0.0.1:9190 cargo run --release -- --metrics-address 127.0.0.1:9190
+```
+
+**Framework metrics** (label `pipeline="event_type_handler"` where applicable):
+
+- `latest_processed_checkpoint`, `latest_processed_checkpoint_timestamp_lag_ms` — lag vs chain tip
+- `total_handler_processor_retries` — decode / processor failures (retries)
+- `watermark_checkpoint_in_db` — committed watermark
+- `total_committer_rows_committed`, `total_committer_batches_failed` — DB write health
+- Ingestion: `total_ingested_checkpoints`, `latest_ingested_checkpoint`, …
+
+**App metrics** (this repo):
+
+- `simple_sui_indexer_events_matched_total`
+- `simple_sui_indexer_decode_errors_total{event_type="…"}`
+- `simple_sui_indexer_package_events_inserted_total`
+- `uptime{version="…"}`
+
+Prometheus scrape example:
+
+```yaml
+scrape_configs:
+  - job_name: simple-sui-indexer
+    static_configs:
+      - targets: ["127.0.0.1:9184"]
+```
+
+Ref: [Sui indexer runtime & metrics](https://docs.sui.io/develop/accessing-data/custom-indexer/indexer-runtime-perf#metrics)
+
 ### 6. Run migrations & first build
 
 ```bash

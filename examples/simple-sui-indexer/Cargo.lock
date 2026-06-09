@@ -3615,7 +3615,7 @@ dependencies = [
  "futures",
  "once_cell",
  "parking_lot",
- "prometheus",
+ "prometheus 0.14.0",
  "prometheus-closure-metric",
  "scopeguard",
  "simple-server-timing-header",
@@ -3646,7 +3646,7 @@ dependencies = [
  "mysten-metrics",
  "once_cell",
  "pin-project-lite",
- "prometheus",
+ "prometheus 0.14.0",
  "quinn-proto",
  "rand 0.8.6",
  "rustls",
@@ -4374,6 +4374,21 @@ dependencies = [
 
 [[package]]
 name = "prometheus"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d33c28a30771f7f96db69893f78b857f7450d7e0237e9c8fc6427a81bae7ed1"
+dependencies = [
+ "cfg-if",
+ "fnv",
+ "lazy_static",
+ "memchr",
+ "parking_lot",
+ "protobuf 2.28.0",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "prometheus"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ca5326d8d0b950a9acd87e6a3f94745394f62e4dae1b1ee22b2bc0c394af43a"
@@ -4383,7 +4398,7 @@ dependencies = [
  "lazy_static",
  "memchr",
  "parking_lot",
- "protobuf",
+ "protobuf 3.7.2",
  "thiserror 2.0.18",
 ]
 
@@ -4393,7 +4408,7 @@ version = "0.1.0"
 source = "git+https://github.com/MystenLabs/sui.git?branch=mainnet#d10b7db79a6634acbc483ad8633a7d27fe3bc7c8"
 dependencies = [
  "anyhow",
- "prometheus",
+ "prometheus 0.14.0",
 ]
 
 [[package]]
@@ -4457,6 +4472,12 @@ checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
 dependencies = [
  "prost",
 ]
+
+[[package]]
+name = "protobuf"
+version = "2.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "106dd99e98437432fed6519dedecfade6a06a73bb7b2a1e019fdd2bee5778d94"
 
 [[package]]
 name = "protobuf"
@@ -5526,10 +5547,12 @@ dependencies = [
  "diesel_migrations",
  "dotenvy",
  "event-bindings",
+ "prometheus 0.13.4",
  "reqwest",
  "serde",
  "serde_json",
  "sui-indexer-alt-framework",
+ "sui-indexer-alt-metrics",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -5783,7 +5806,7 @@ dependencies = [
  "mysten-network",
  "num_cpus",
  "object_store",
- "prometheus",
+ "prometheus 0.14.0",
  "prost",
  "prost-types",
  "rand 0.8.6",
@@ -5828,7 +5851,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
- "prometheus",
+ "prometheus 0.14.0",
  "prometheus-closure-metric",
  "sui-futures",
  "sui-pg-db",
@@ -5861,7 +5884,7 @@ dependencies = [
  "diesel-async",
  "diesel_migrations",
  "futures",
- "prometheus",
+ "prometheus 0.14.0",
  "rustls",
  "scoped-futures",
  "sui-field-count",
@@ -6051,7 +6074,7 @@ dependencies = [
  "p384",
  "parking_lot",
  "passkey-types",
- "prometheus",
+ "prometheus 0.14.0",
  "proptest",
  "proptest-derive",
  "prost",

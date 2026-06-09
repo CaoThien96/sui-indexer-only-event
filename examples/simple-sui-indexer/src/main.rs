@@ -1,4 +1,7 @@
+mod app_metrics;
+mod bootstrap;
 mod handlers;
+mod metrics_config;
 mod models;
 mod prefix;
 mod static_event_decode;
@@ -8,20 +11,24 @@ use handlers::EventTypeHandler;
 
 pub mod schema;
 
+use std::sync::Arc;
+
 use anyhow::{Result, bail};
 use clap::Parser;
 use diesel_migrations::{EmbeddedMigrations, embed_migrations};
 use sui_indexer_alt_framework::{
-    cluster::{Args, IndexerCluster},
+    cluster::Args,
     pipeline::{CommitterConfig, sequential::SequentialConfig},
+    postgres::DbArgs,
     service::Error,
 };
 use tracing::info;
 use url::Url;
 
+use crate::bootstrap::{IndexerRuntime, log_key_builtin_metrics};
+
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 const COLLECT_INTERVAL_MS: u64 = 100;
-
 fn sequential_config() -> SequentialConfig {
     SequentialConfig {
         committer: CommitterConfig {
@@ -70,7 +77,10 @@ async fn main() -> Result<()> {
         .parse::<Url>()
         .expect("Invalid database URL");
 
-    let args = Args::parse();
+    let mut args = Args::parse();
+    metrics_config::apply_metrics_env(&mut args);
+    metrics_config::log_metrics_endpoint(&args);
+
     info!("Parsed CLI arguments and initialized runtime");
     let event_type_prefixes = parse_event_type_prefixes()?;
     info!(
@@ -79,13 +89,10 @@ async fn main() -> Result<()> {
         "Loaded EVENT_TYPE_PREFIXES configuration"
     );
 
-    let mut cluster = IndexerCluster::builder()
-        .with_args(args)
-        .with_database_url(database_url)
-        .with_migrations(&MIGRATIONS)
-        .build()
-        .await?;
-    info!("Indexer cluster initialized");
+    let metrics_prefix = metrics_config::metrics_prefix_from_env();
+    if let Some(ref prefix) = metrics_prefix {
+        info!(metrics_prefix = %prefix, "Using Prometheus metric name prefix");
+    }
 
     let pipeline_config = sequential_config();
     info!(
@@ -93,15 +100,30 @@ async fn main() -> Result<()> {
         "Using sequential pipeline config"
     );
 
-    cluster
+    let mut runtime = IndexerRuntime::build(
+        database_url,
+        DbArgs::default(),
+        args,
+        sui_indexer_alt_framework::ingestion::IngestionConfig::default(),
+        &MIGRATIONS,
+        metrics_prefix,
+    )
+    .await?;
+    info!("Indexer runtime initialized (Postgres + Prometheus)");
+
+    let app_metrics = Arc::clone(&runtime.app_metrics);
+    runtime
+        .indexer
         .sequential_pipeline(
-            EventTypeHandler::new(event_type_prefixes),
+            EventTypeHandler::new(event_type_prefixes, app_metrics),
             pipeline_config,
         )
         .await?;
     info!("Event prefix pipeline registered, indexer is starting");
 
-    match cluster.run().await?.main().await {
+    log_key_builtin_metrics(&runtime.indexer, EventTypeHandler::NAME);
+
+    match runtime.run().await {
         Ok(()) | Err(Error::Terminated) => {
             info!("Indexer terminated normally");
             Ok(())
