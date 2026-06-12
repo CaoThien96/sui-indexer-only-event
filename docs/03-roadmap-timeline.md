@@ -50,11 +50,14 @@ gantt
 
 ### Week 1–2: Greenfield indexer skeleton
 
+**Detailed plan:** [plans/week-01-02-greenfield-indexer.md](./plans/week-01-02-greenfield-indexer.md) · **VI:** [vi/plans/week-01-02-greenfield-indexer.md](./vi/plans/week-01-02-greenfield-indexer.md)
+
 | Task | Exit criteria |
 |------|---------------|
 | Cargo workspace `crates/indexer`, `crates/indexer-store`, `crates/event-bindings` | `cargo build` passes |
-| Manual `Indexer` + GCS + gRPC streaming config | Catches checkpoints on testnet |
+| Manual `Indexer` + testnet gRPC streaming (+ HTTPS fallback) | Catches checkpoints on testnet |
 | `CompositeStore`: Kafka BYOS + Postgres watermarks | Facts on Kafka; watermark advances |
+| Stub sequential pipeline (`stub_events`) | End-to-end proof before DEX pipelines |
 | `infra/docker-compose.yml` (Kafka, Postgres) | Local stack runs |
 | Prometheus scrape `:9184/metrics` | Dashboard stub |
 

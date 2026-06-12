@@ -20,12 +20,17 @@ Hệ thống thống kê token trên Sui (multi-DEX). Triển khai lại từ đ
 
 ## Docs
 
-| Document | Content |
-|----------|---------|
-| [docs/01-product-scope.md](./docs/01-product-scope.md) | Chốt tính năng |
-| [docs/02-system-architecture.md](./docs/02-system-architecture.md) | Chốt kiến trúc (greenfield) |
-| [docs/03-roadmap-timeline.md](./docs/03-roadmap-timeline.md) | Chốt timeline |
-| [docs/06-reference-examples.md](./docs/06-reference-examples.md) | `examples/` ≠ production |
+**Mục lục tiếng Việt:** [docs/vi/README.md](./docs/vi/README.md)
+
+| EN | Tiếng Việt | Nội dung |
+|----|------------|----------|
+| [01-product-scope](./docs/01-product-scope.md) | [vi/01](./docs/vi/01-product-scope.md) | Chốt tính năng |
+| [02-system-architecture](./docs/02-system-architecture.md) | [vi/02](./docs/vi/02-system-architecture.md) | Chốt kiến trúc |
+| [03-roadmap-timeline](./docs/03-roadmap-timeline.md) | [vi/03](./docs/vi/03-roadmap-timeline.md) | Chốt timeline |
+| [04-data-contracts](./docs/04-data-contracts.md) | [vi/04](./docs/vi/04-data-contracts.md) | Kafka + DB schemas |
+| [05-dex-coverage](./docs/05-dex-coverage.md) | [vi/05](./docs/vi/05-dex-coverage.md) | DEX events |
+| [06-reference-examples](./docs/06-reference-examples.md) | [vi/06](./docs/vi/06-reference-examples.md) | `examples/` ≠ production |
+| [07-indexer-optimization](./docs/07-indexer-optimization-checklist.md) | [vi/07](./docs/vi/07-indexer-optimization-checklist.md) | Checklist tối ưu |
 
 ## Requirements
 

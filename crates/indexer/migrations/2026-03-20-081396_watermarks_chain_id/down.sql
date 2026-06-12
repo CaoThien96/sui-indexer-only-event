@@ -1,0 +1,1 @@
+ALTER TABLE watermarks DROP COLUMN IF EXISTS chain_id;

@@ -1,0 +1,27 @@
+[package]
+name = "indexer-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sui-indexer-alt-framework-store-traits.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+rdkafka.workspace = true
+diesel.workspace = true
+diesel-async.workspace = true
+diesel_migrations.workspace = true
+prometheus.workspace = true
+url.workspace = true
+chrono.workspace = true
+scoped-futures.workspace = true
+sha2.workspace = true
+hex.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+dotenvy.workspace = true

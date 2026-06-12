@@ -1,0 +1,1 @@
+ALTER TABLE watermarks ADD COLUMN IF NOT EXISTS chain_id BYTEA;

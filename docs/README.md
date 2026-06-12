@@ -3,6 +3,8 @@
 Official planning docs for the token statistics system on Sui.  
 **Production code will be built greenfield** — see [06-reference-examples.md](./06-reference-examples.md).
 
+> **Tiếng Việt:** [vi/README.md](./vi/README.md)
+
 | # | Document | Purpose |
 |---|----------|---------|
 | 1 | [01-product-scope.md](./01-product-scope.md) | **Frozen features** — what we build, by phase, in/out of scope |
@@ -12,6 +14,13 @@ Official planning docs for the token statistics system on Sui.
 | 5 | [05-dex-coverage.md](./05-dex-coverage.md) | Supported DEX packages, events, decode status |
 | 6 | [06-reference-examples.md](./06-reference-examples.md) | What `examples/` contains — reference only, not production |
 | 7 | [07-indexer-optimization-checklist.md](./07-indexer-optimization-checklist.md) | Official Sui runtime/BYOS optimizations — frozen checklist |
+
+## Execution plans
+
+| Plan | Purpose |
+|------|---------|
+| [plans/week-01-02-greenfield-indexer.md](./plans/week-01-02-greenfield-indexer.md) | **Week 1–2** day-by-day indexer skeleton (EN) |
+| [vi/plans/week-01-02-greenfield-indexer.md](./vi/plans/week-01-02-greenfield-indexer.md) | **Tuần 1–2** (VI) |
 
 ## Related repo docs
 

@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/indexer",
+    "crates/indexer-store",
+    "crates/event-bindings",
+]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "Apache-2.0"
+
+# Mysten deps pinned to rev from first successful build (2026-06-03).
+[workspace.dependencies]
+sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", rev = "d10b7db79a6634acbc483ad8633a7d27fe3bc7c8", features = ["cluster"] }
+sui-indexer-alt-framework-store-traits = { git = "https://github.com/MystenLabs/sui.git", rev = "d10b7db79a6634acbc483ad8633a7d27fe3bc7c8" }
+sui-indexer-alt-metrics = { git = "https://github.com/MystenLabs/sui.git", rev = "d10b7db79a6634acbc483ad8633a7d27fe3bc7c8" }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
+rdkafka = { version = "0.36", features = ["cmake-build"] }
+diesel = { version = "2.3", features = ["postgres", "chrono", "64-column-tables"] }
+diesel-async = { version = "0.8", features = ["bb8", "postgres", "async-connection-wrapper"] }
+diesel_migrations = "2.3"
+prometheus = "0.14"
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+scoped-futures = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
