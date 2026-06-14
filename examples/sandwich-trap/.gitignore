@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.env
+reports/
+__pycache__/
+config/mainnet.json

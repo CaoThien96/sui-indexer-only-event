@@ -4,6 +4,7 @@ members = [
     "crates/indexer",
     "crates/indexer-store",
     "crates/event-bindings",
+    "examples/rpc-service"
 ]
 
 [workspace.package]

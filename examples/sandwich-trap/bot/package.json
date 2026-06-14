@@ -1,0 +1,24 @@
+{
+  "name": "sandwich-trap",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "read-pool": "tsx src/index.ts read-pool",
+    "merge-coins": "tsx src/index.ts merge-coins",
+    "bait": "tsx src/index.ts bait",
+    "dump": "tsx src/index.ts dump",
+    "trap": "tsx src/index.ts trap",
+    "trap-loop": "tsx src/index.ts trap-loop"
+  },
+  "dependencies": {
+    "@mysten/sui": "^1.29.0",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

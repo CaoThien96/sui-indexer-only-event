@@ -360,6 +360,38 @@ Optional env vars:
 | `LOG_EVERY_N_CHECKPOINTS` | `100` | Progress log interval |
 | `RUST_LOG` | — | e.g. `info`, `debug` |
 
+### Prune old events (3-day retention)
+
+`package_events` can grow quickly. Prune by `timestamp_ms` (checkpoint time), **batched DELETE**, safe while indexer + rpc-service run.
+
+```bash
+cd examples
+
+# Preview rows to delete
+chmod +x scripts/prune-package-events.sh
+./scripts/prune-package-events.sh --dry-run
+
+# Run now (default: keep last 3 days)
+./scripts/prune-package-events.sh
+
+# Custom retention / batch size
+RETENTION_DAYS=3 BATCH_SIZE=5000 ./scripts/prune-package-events.sh
+```
+
+**Daily cron** (default **23:55** every day):
+
+```bash
+chmod +x scripts/install-prune-package-events-cron.sh
+./scripts/install-prune-package-events-cron.sh
+
+# Custom schedule (cron(5)), e.g. 00:30 UTC
+CRON_SCHEDULE='30 0 * * *' ./scripts/install-prune-package-events-cron.sh
+```
+
+Log: `simple-sui-indexer/prune-package-events.log`. Uses `DATABASE_URL` from `simple-sui-indexer/.env`.
+
+> Prune only deletes `package_events` rows. **Watermarks are unchanged** — indexer does not re-backfill pruned history; RPC `queryEvents` only returns the retained window.
+
 Decode is **sync static BCS** via `event-bindings` — zero fullnode RPC at index time. Unknown event types within a matched prefix **fail the checkpoint** (add binding + rebuild).
 
 ### Build
@@ -668,6 +700,117 @@ psql postgres://postgres:postgres@localhost:5432/sui_indexer -c "
   ORDER BY checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction
   LIMIT 10;"
 ```
+
+### Bot sandwich statistics (same-checkpoint)
+
+Analyze competitor bot sandwich patterns from indexed Cetus `SwapEvent` rows. Detects per-checkpoint triplets in consensus order (`transaction_sequence_in_checkpoint`, `event_sequence_in_transaction`):
+
+`bot buy (atob=false)` → `victim buy (atob=false, same pool)` → `bot sell (atob=true)`
+
+```bash
+cd examples/simple-sui-indexer
+python3 scripts/analyze_bot_sandwich.py
+
+# Per-checkpoint tx/event order + amounts (stdout); full report always in markdown file
+VERBOSE=1 python3 scripts/analyze_bot_sandwich.py
+
+# Limit checkpoints (quick run)
+LIMIT_CHECKPOINTS=20 python3 scripts/analyze_bot_sandwich.py
+
+# Custom report path (default: reports/bot_sandwich_report.md)
+REPORT_PATH=reports/my_report.md python3 scripts/analyze_bot_sandwich.py
+```
+
+Env vars (defaults in script):
+
+| Var | Default |
+|-----|---------|
+| `DATABASE_URL` | from `.env` or `postgres://postgres:postgres@localhost:5432/sui_indexer` |
+| `BOT_ADDRESS` | `0xf3981a28e88f86255713dada5d7b1ebb23b0b9e499e80fa1406bdd74c3364735` |
+| `SWAP_EVENT_TYPE` | `0x1eab...::pool::SwapEvent` |
+| `VERBOSE` | `0` (stdout detail only) |
+| `LIMIT_CHECKPOINTS` | `0` (all) |
+| `REPORT_PATH` | `reports/bot_sandwich_report.md` |
+
+Sanity check — bot swap rows exist:
+
+```bash
+psql postgres://postgres:postgres@localhost:5432/sui_indexer -c "
+  SELECT COUNT(*) FROM package_events
+  WHERE lower(sender) = '0xf3981a28e88f86255713dada5d7b1ebb23b0b9e499e80fa1406bdd74c3364735'
+    AND event_type ILIKE '%::pool::SwapEvent';"
+```
+
+---
+
+## sandwich-trap
+
+Trap operator: bait BUY + burst DUMP SELL (no indexer wait). User provides pool + wallets.
+
+Location: `examples/sandwich-trap/`
+
+### Setup
+
+```bash
+cd examples/sandwich-trap/bot
+cp .env.example .env
+cp ../config/mainnet.template.json ../config/mainnet.json
+# Edit mainnet.json: poolId, coinTypeA, trapMode, baitSuiMist, dumpTokenAmount
+npm install
+```
+
+### Env (bot/.env)
+
+| Mode | Vars |
+|------|------|
+| `single-tx` | `SUI_SECRET_KEY` |
+| `parallel-tx` | `SUI_SECRET_KEY_BAIT`, `SUI_SECRET_KEY_DUMP` |
+
+### Commands
+
+```bash
+cd examples/sandwich-trap/bot
+
+# Pool state (no gas)
+npm run read-pool -- --config=../config/mainnet.json
+
+# Debug single legs
+npm run bait -- --config=../config/mainnet.json
+npm run dump -- --config=../config/mainnet.json
+
+# One trap round (bait + dump together)
+npm run trap -- --config=../config/mainnet.json
+
+# Repeat trap rounds
+npm run trap-loop -- --config=../config/mainnet.json
+npm run trap-loop -- --config=../config/mainnet.json --max-rounds=10
+```
+
+### Config (`config/mainnet.json`)
+
+| Field | Description |
+|-------|-------------|
+| `trapMode` | `single-tx` or `parallel-tx` |
+| `poolId` | User-provided Cetus pool |
+| `coinTypeA` | Token type (pool coin A) |
+| `baitSuiMist` | Bait BUY SUI input |
+| `dumpTokenAmount` | Token per burst SELL tx |
+| `dumpBurstCount` | Parallel dump txs (`parallel-tx`) |
+| `baitGasPrice` / `dumpGasPrice` | Gas price per leg |
+
+### Post-hoc analytics
+
+```bash
+cd examples/sandwich-trap
+POOL_ID=0x... python3 scripts/analyze_trap_outcome.py
+```
+
+| Var | Default |
+|-----|---------|
+| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/sui_indexer` |
+| `POOL_ID` | (required) |
+| `BOT_ADDRESS` | competitor bot address |
+| `REPORT_PATH` | `reports/trap_outcome_report.md` |
 
 ---
 
