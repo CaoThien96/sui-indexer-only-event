@@ -1,5 +1,6 @@
 mod app_metrics;
 mod bootstrap;
+mod clickhouse_events;
 mod handlers;
 mod metrics_config;
 mod models;
@@ -8,6 +9,7 @@ mod static_event_decode;
 mod telegram_notify;
 
 use handlers::EventTypeHandler;
+use sui_indexer_alt_framework::pipeline::Processor;
 
 pub mod schema;
 
@@ -111,11 +113,14 @@ async fn main() -> Result<()> {
     .await?;
     info!("Indexer runtime initialized (Postgres + Prometheus)");
 
+    let ch_writer = Arc::new(clickhouse_events::ClickHouseEventsWriter::from_env()?);
+    info!("ClickHouse events writer configured (PostgreSQL watermarks only)");
+
     let app_metrics = Arc::clone(&runtime.app_metrics);
     runtime
         .indexer
         .sequential_pipeline(
-            EventTypeHandler::new(event_type_prefixes, app_metrics),
+            EventTypeHandler::new(event_type_prefixes, app_metrics, ch_writer),
             pipeline_config,
         )
         .await?;

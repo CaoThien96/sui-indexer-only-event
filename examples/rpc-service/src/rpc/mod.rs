@@ -4,7 +4,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
-use sqlx::PgPool;
+use std::sync::Arc;
+use clickhouse::Client;
 use tracing::error;
 
 use crate::db::{parse_query_events_params, query_events};
@@ -12,7 +13,7 @@ use crate::mapper::build_query_events_result;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub pool: PgPool,
+    pub clickhouse: Arc<Client>,
 }
 
 pub async fn health() -> impl IntoResponse {
@@ -20,13 +21,13 @@ pub async fn health() -> impl IntoResponse {
 }
 
 pub async fn json_rpc(State(state): State<AppState>, Json(body): Json<Value>) -> Response {
-    match dispatch(&state.pool, &body).await {
+    match dispatch(&state.clickhouse, &body).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(rpc_error) => (StatusCode::OK, Json(rpc_error)).into_response(),
     }
 }
 
-async fn dispatch(pool: &PgPool, body: &Value) -> Result<Value, Value> {
+async fn dispatch(client: &Client, body: &Value) -> Result<Value, Value> {
     let id = body.get("id").cloned().unwrap_or(Value::Null);
     let method = body
         .get("method")
@@ -38,12 +39,16 @@ async fn dispatch(pool: &PgPool, body: &Value) -> Result<Value, Value> {
     }
 
     match method {
-        "suix_queryEvents" => handle_query_events(pool, id, body.get("params")).await,
+        "suix_queryEvents" => handle_query_events(client, id, body.get("params")).await,
         _ => Err(method_not_found(id, method)),
     }
 }
 
-async fn handle_query_events(pool: &PgPool, id: Value, params: Option<&Value>) -> Result<Value, Value> {
+async fn handle_query_events(
+    client: &Client,
+    id: Value,
+    params: Option<&Value>,
+) -> Result<Value, Value> {
     let params = params.ok_or_else(|| invalid_params(id.clone(), "missing params"))?;
 
     let query_params = parse_query_events_params(params).map_err(|e| {
@@ -53,10 +58,10 @@ async fn handle_query_events(pool: &PgPool, id: Value, params: Option<&Value>) -
 
     let limit = query_params.limit;
 
-    let rows = query_events(pool, query_params)
+    let rows = query_events(client, query_params)
         .await
         .map_err(|e| {
-            error!(error = %e, "database query failed");
+            error!(error = %e, "ClickHouse query failed");
             let message = e.to_string();
             if message.starts_with("cursor event not found:") {
                 invalid_params(id.clone(), message)
@@ -131,12 +136,8 @@ mod tests {
             "params": []
         });
 
-        let err = dispatch(
-            &PgPool::connect_lazy("postgres://invalid").expect("lazy pool"),
-            &body,
-        )
-        .await
-        .unwrap_err();
+        let client = Client::default().with_url("http://127.0.0.1:1");
+        let err = dispatch(&client, &body).await.unwrap_err();
 
         assert_eq!(err["error"]["code"], -32601);
     }

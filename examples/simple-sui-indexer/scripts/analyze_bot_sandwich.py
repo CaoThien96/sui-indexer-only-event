@@ -13,18 +13,20 @@ Usage:
   LIMIT_CHECKPOINTS=10 python3 scripts/analyze_bot_sandwich.py
   REPORT_PATH=reports/bot_sandwich_report.md python3 scripts/analyze_bot_sandwich.py
 
-Requires: psql, DATABASE_URL (or .env in cwd).
+Requires: ClickHouse with package_events, CLICKHOUSE_URL (or .env in cwd).
 Output: markdown report file (default reports/bot_sandwich_report.md) + summary on stdout.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from ch_client import run_query_tsv  # noqa: E402
 
 
 def load_dotenv() -> None:
@@ -44,6 +46,7 @@ load_dotenv()
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgres://postgres:postgres@localhost:5432/sui_indexer"
 )
+CLICKHOUSE_URL = os.environ.get("CLICKHOUSE_URL", "http://127.0.0.1:8123")
 BOT_ADDRESS = os.environ.get(
     "BOT_ADDRESS",
     "0xf3981a28e88f86255713dada5d7b1ebb23b0b9e499e80fa1406bdd74c3364735",
@@ -91,20 +94,12 @@ class SwapEvent:
         return (self.tx_idx, self.event_idx)
 
 
-def run_psql(sql: str) -> str:
-    proc = subprocess.run(
-        ["psql", DATABASE_URL, "-t", "-A", "-F", "\t", "-c", sql],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"psql failed: {proc.stderr.strip()}")
-    return proc.stdout
+def run_ch(sql: str) -> str:
+    return "\n".join(run_query_tsv(sql))
 
 
 def sql_escape(value: str) -> str:
-    return value.replace("'", "''")
+    return value.replace("'", "''").replace("\\", "\\\\")
 
 
 def normalize_pool(pool: str) -> str:
@@ -151,13 +146,13 @@ def fetch_bot_checkpoints() -> list[int]:
     swap_type = sql_escape(SWAP_EVENT_TYPE)
     sql = f"""
 SELECT DISTINCT checkpoint_sequence_number
-FROM package_events
+FROM package_events FINAL
 WHERE event_type = '{swap_type}'
   AND lower(sender) = '{bot}'
-ORDER BY checkpoint_sequence_number;
+ORDER BY checkpoint_sequence_number
 """
     checkpoints: list[int] = []
-    for line in run_psql(sql).splitlines():
+    for line in run_ch(sql).splitlines():
         line = line.strip()
         if line:
             checkpoints.append(int(line))
@@ -175,17 +170,17 @@ SELECT event_id_tx_digest,
        transaction_sequence_in_checkpoint,
        event_sequence_in_transaction,
        sender,
-       parsed_json->>'pool' AS pool,
-       parsed_json->>'atob' AS atob,
-       parsed_json->>'amount_in' AS amount_in
-FROM package_events
+       JSONExtractString(parsed_json, 'pool') AS pool,
+       JSONExtractString(parsed_json, 'atob') AS atob,
+       JSONExtractString(parsed_json, 'amount_in') AS amount_in
+FROM package_events FINAL
 WHERE event_type = '{swap_type}'
   AND checkpoint_sequence_number = {checkpoint}
 ORDER BY transaction_sequence_in_checkpoint,
-         event_sequence_in_transaction;
+         event_sequence_in_transaction
 """
     events: list[SwapEvent] = []
-    for line in run_psql(sql).splitlines():
+    for line in run_ch(sql).splitlines():
         ev = parse_swap_row(line)
         if ev is not None:
             events.append(ev)
@@ -253,18 +248,18 @@ SELECT event_id_tx_digest,
        transaction_sequence_in_checkpoint,
        event_sequence_in_transaction,
        sender,
-       parsed_json->>'pool' AS pool,
-       parsed_json->>'atob' AS atob,
-       parsed_json->>'amount_in' AS amount_in
-FROM package_events
+       JSONExtractString(parsed_json, 'pool') AS pool,
+       JSONExtractString(parsed_json, 'atob') AS atob,
+       JSONExtractString(parsed_json, 'amount_in') AS amount_in
+FROM package_events FINAL
 WHERE event_type = '{swap_type}'
   AND checkpoint_sequence_number >= {min_checkpoint}{max_clause}
 ORDER BY checkpoint_sequence_number,
          transaction_sequence_in_checkpoint,
-         event_sequence_in_transaction;
+         event_sequence_in_transaction
 """
     events: list[SwapEvent] = []
-    for line in run_psql(sql).splitlines():
+    for line in run_ch(sql).splitlines():
         ev = parse_swap_row(line)
         if ev is not None:
             events.append(ev)

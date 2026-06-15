@@ -63,8 +63,16 @@ impl IndexerRuntime {
     }
 
     pub async fn run(self) -> Result<(), Error> {
-        let s_indexer = self.indexer.run().await?;
-        let s_metrics = self.metrics.run().await?;
+        let s_indexer = self
+            .indexer
+            .run()
+            .await
+            .map_err(|_| Error::Aborted)?;
+        let s_metrics = self
+            .metrics
+            .run()
+            .await
+            .map_err(|_| Error::Aborted)?;
         s_indexer.attach(s_metrics).main().await
     }
 }

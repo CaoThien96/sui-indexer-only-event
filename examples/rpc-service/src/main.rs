@@ -4,6 +4,7 @@ mod mapper;
 mod rpc;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::Result;
 use axum::routing::{get, post};
@@ -22,9 +23,9 @@ async fn main() -> Result<()> {
         .init();
 
     let config = config::Config::from_env()?;
-    let pool = db::create_pool(&config.database_url).await?;
+    let clickhouse = Arc::new(db::create_client(&config.clickhouse));
 
-    let state = AppState { pool };
+    let state = AppState { clickhouse };
 
     let app = Router::new()
         .route("/health", get(health))
@@ -32,7 +33,7 @@ async fn main() -> Result<()> {
         .with_state(state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.rpc_port));
-    info!(%addr, "Starting rpc-service (suix_queryEvents MVP)");
+    info!(%addr, "Starting rpc-service (suix_queryEvents via ClickHouse)");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;

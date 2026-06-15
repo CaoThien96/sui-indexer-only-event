@@ -3,15 +3,14 @@ use serde_json::Value;
 use std::sync::Arc;
 
 use crate::app_metrics::AppMetrics;
+use crate::clickhouse_events::ClickHouseEventsWriter;
 use sui_indexer_alt_framework::pipeline::Processor;
 use sui_indexer_alt_framework::types::full_checkpoint_content::Checkpoint;
 
 use crate::models::StoredPackageEvent;
 use crate::prefix::matches_any_prefix;
-use crate::schema::package_events::dsl::{event_id_seq, event_id_tx_digest, package_events};
 use crate::static_event_decode;
 use crate::telegram_notify;
-use diesel_async::RunQueryDsl;
 use sui_indexer_alt_framework::{
     pipeline::sequential::Handler,
     postgres::{Connection, Db},
@@ -21,13 +20,19 @@ use tracing::{debug, info};
 pub struct EventTypeHandler {
     event_type_prefixes: Vec<String>,
     app_metrics: Arc<AppMetrics>,
+    ch_writer: Arc<ClickHouseEventsWriter>,
 }
 
 impl EventTypeHandler {
-    pub fn new(event_type_prefixes: Vec<String>, app_metrics: Arc<AppMetrics>) -> Self {
+    pub fn new(
+        event_type_prefixes: Vec<String>,
+        app_metrics: Arc<AppMetrics>,
+        ch_writer: Arc<ClickHouseEventsWriter>,
+    ) -> Self {
         Self {
             event_type_prefixes,
             app_metrics,
+            ch_writer,
         }
     }
 
@@ -132,24 +137,17 @@ impl Handler for EventTypeHandler {
         batch.extend(values);
     }
 
-    async fn commit<'a>(&self, batch: &Self::Batch, conn: &mut Connection<'a>) -> Result<usize> {
-        let inserted = diesel::insert_into(package_events)
-            .values(batch)
-            .on_conflict((event_id_tx_digest, event_id_seq))
-            .do_nothing()
-            .execute(conn)
-            .await?;
+    async fn commit<'a>(&self, batch: &Self::Batch, _conn: &mut Connection<'a>) -> Result<usize> {
+        let inserted = self.ch_writer.insert_batch(batch).await?;
 
         if inserted > 0 {
-            self.app_metrics
-                .rows_inserted
-                .inc_by(inserted as u64);
+            self.app_metrics.rows_inserted.inc_by(inserted as u64);
         }
 
         debug!(
             batch_size = batch.len(),
-            inserted_rows = inserted,
-            "Committed event prefix batch to PostgreSQL"
+            clickhouse_rows = inserted,
+            "Committed event prefix batch to ClickHouse"
         );
 
         Ok(inserted)

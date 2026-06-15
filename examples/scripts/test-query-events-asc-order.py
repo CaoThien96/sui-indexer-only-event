@@ -14,25 +14,26 @@ Usage:
   MOVE_EVENT_TYPE='0x1eab...::pool::SwapEvent' MAX_PAGES=3 LIMIT=20 python3 scripts/test-query-events-asc-order.py
   COMPARE_FULLNODE=1 python3 scripts/test-query-events-asc-order.py
 
-Requires: rpc-service running, psql, curl. Set DATABASE_URL if not default.
+Requires: rpc-service running, curl. Set CLICKHOUSE_URL if not default.
+Uses ClickHouse to verify stream positions (package_events).
 """
 
 from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from ch_client import run_query_tsv  # noqa: E402
 
 RPC_URL = os.environ.get("RPC_URL", "http://127.0.0.1:9000")
 FULLNODE_URL = os.environ.get("FULLNODE_URL", "https://fullnode.mainnet.sui.io:443")
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL", "postgres://postgres:postgres@localhost:5432/sui_indexer"
-)
 MOVE_EVENT_TYPE = os.environ.get(
     "MOVE_EVENT_TYPE",
     "0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::pool::SwapEvent",
@@ -92,32 +93,26 @@ def load_stream_positions(ids: list[EventId]) -> dict[EventId, StreamPos]:
     if not ids:
         return {}
 
-    values = ",".join(
+    tuples = ",".join(
         f"('{i.tx_digest.replace(chr(39), chr(39)+chr(39))}', {i.event_seq})" for i in ids
     )
     sql = f"""
-SELECT pe.event_id_tx_digest, pe.event_id_seq,
-       pe.checkpoint_sequence_number,
-       pe.transaction_sequence_in_checkpoint,
-       pe.event_sequence_in_transaction
-FROM package_events pe
-JOIN (VALUES {values}) AS v(tx_digest, event_seq)
-  ON pe.event_id_tx_digest = v.tx_digest AND pe.event_id_seq = v.event_seq;
+SELECT event_id_tx_digest, event_id_seq,
+       checkpoint_sequence_number,
+       transaction_sequence_in_checkpoint,
+       event_sequence_in_transaction
+FROM package_events FINAL
+WHERE (event_id_tx_digest, event_id_seq) IN ({tuples})
 """
-    proc = subprocess.run(
-        ["psql", DATABASE_URL, "-t", "-A", "-F", ",", "-c", sql],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(f"psql failed: {proc.stderr.strip()}")
+
+    try:
+        lines = run_query_tsv(sql)
+    except RuntimeError as exc:
+        raise RuntimeError(f"ClickHouse query failed: {exc}") from exc
 
     out: dict[EventId, StreamPos] = {}
-    for line in proc.stdout.splitlines():
-        if not line.strip():
-            continue
-        tx_digest, event_seq, ckpt, tx_idx, ev_idx = line.split(",")
+    for line in lines:
+        tx_digest, event_seq, ckpt, tx_idx, ev_idx = line.split("\t")
         key = EventId(tx_digest, int(event_seq))
         out[key] = StreamPos(int(ckpt), int(tx_idx), int(ev_idx))
     return out

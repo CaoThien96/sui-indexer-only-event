@@ -11,7 +11,6 @@ use diff::diff_keys;
 use fullnode::FullnodeClient;
 use indexer::{list_event_keys_in_window, max_indexed_timestamp_ms};
 use report::{warn_if_window_beyond_indexed_data, ReconciliationReport};
-use sqlx::postgres::PgPoolOptions;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -24,26 +23,23 @@ async fn main() -> Result<()> {
         .init();
 
     let config = Config::from_env()?;
+    let clickhouse = config.clickhouse_client();
 
     tracing::info!(
         event_type = %config.move_event_type,
         window_start_ms = config.start_time_ms(),
         window_end_ms = config.end_time_ms(),
         fullnode_url = %config.fullnode_url,
-        "Starting reconciliation phase 2"
+        clickhouse_url = %config.clickhouse_url,
+        "Starting reconciliation (ClickHouse vs fullnode)"
     );
 
-    let pool = PgPoolOptions::new()
-        .max_connections(2)
-        .connect(&config.database_url)
-        .await?;
-
-    let max_ts = max_indexed_timestamp_ms(&pool).await?;
+    let max_ts = max_indexed_timestamp_ms(&clickhouse).await?;
     warn_if_window_beyond_indexed_data(config.end_time_ms(), max_ts)?;
 
-    tracing::info!("Loading indexer event keys...");
+    tracing::info!("Loading indexer event keys from ClickHouse...");
     let indexer_keys = list_event_keys_in_window(
-        &pool,
+        &clickhouse,
         &config.indexer_event_type(),
         config.start_time_ms(),
         config.end_time_ms(),

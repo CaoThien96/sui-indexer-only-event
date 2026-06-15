@@ -2,7 +2,8 @@
 
 Quick reference for day-to-day operations in this repo.
 
-**Database:** `postgres://postgres:postgres@localhost:5432/sui_indexer`  
+**PostgreSQL:** watermarks + pipeline state only (`postgres://postgres:postgres@localhost:5432/sui_indexer`)  
+**ClickHouse:** all indexed events — hot SSD (≤3 days) + cold local HDD (>3 days, TTL MOVE)  
 **Project root:** `/Users/thiencao/Desktop/sui-indexer`
 
 ---
@@ -168,6 +169,8 @@ Minimum `simple-sui-indexer/.env`:
 
 ```env
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/sui_indexer
+CLICKHOUSE_URL=http://localhost:8123
+CLICKHOUSE_DATABASE=sui_indexer
 EVENT_TYPE_PREFIXES=0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a35689b2fb::,0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::
 
 # Optional — Telegram alert when processor fails (missing binding, decode error, …)
@@ -229,7 +232,7 @@ cd simple-sui-indexer
 export LIBRARY_PATH="/opt/homebrew/opt/libpq/lib:$LIBRARY_PATH"
 export CPATH="/opt/homebrew/opt/libpq/include:$CPATH"
 
-# Apply migrations (creates package_events, watermarks, etc.)
+# Apply migrations (creates watermarks, drops package_events — events live in ClickHouse)
 diesel migration run
 
 # Build indexer + backfill binary (event-bindings needs network on first compile)
@@ -296,14 +299,19 @@ psql postgres://postgres:postgres@localhost:5432/sui_indexer
 
 ### Reset indexer data (keep schema, restart from scratch)
 
-Clears indexed events and watermark so the next run respects `--first-checkpoint`:
+Clears ClickHouse events and PostgreSQL watermark so the next run respects `--first-checkpoint`:
 
 ```bash
+# ClickHouse events
+curl -s 'http://127.0.0.1:8123/' --data 'TRUNCATE TABLE sui_indexer.package_events'
+
+# Watermark only (PostgreSQL)
 psql postgres://postgres:postgres@localhost:5432/sui_indexer <<'SQL'
-TRUNCATE package_events;
 DELETE FROM watermarks WHERE pipeline = 'event_type_handler';
 SQL
 ```
+
+> Legacy `TRUNCATE package_events` on PostgreSQL no longer applies — that table was removed.
 
 ### Full reset (drop all tables — re-run migrations after)
 
@@ -324,73 +332,149 @@ diesel migration run
 psql postgres://postgres:postgres@localhost:5432/sui_indexer -c \
   "SELECT pipeline, checkpoint_hi_inclusive FROM watermarks;"
 
-# Total events + checkpoint range
-psql postgres://postgres:postgres@localhost:5432/sui_indexer -c \
-  "SELECT COUNT(*) AS total,
-          MIN(checkpoint_sequence_number) AS min_cp,
-          MAX(checkpoint_sequence_number) AS max_cp
-   FROM package_events;"
+# Event counts (ClickHouse)
+curl -s 'http://127.0.0.1:8123/?database=sui_indexer' --data \
+  "SELECT count() AS total, min(checkpoint_sequence_number), max(checkpoint_sequence_number) FROM package_events FINAL"
 
-# Event types breakdown
-psql postgres://postgres:postgres@localhost:5432/sui_indexer -c \
-  "SELECT event_type, COUNT(*) AS cnt
-   FROM package_events
-   GROUP BY event_type
-   ORDER BY cnt DESC
-   LIMIT 20;"
-
-# Turbos PoolCreatedEvent (canonical event type casing)
-psql postgres://postgres:postgres@localhost:5432/sui_indexer -c \
-  "SELECT COUNT(*) FROM package_events
-   WHERE event_type LIKE '%pool_factory%poolcreatedevent%';"
+# Event types breakdown (ClickHouse)
+curl -s 'http://127.0.0.1:8123/?database=sui_indexer' --data \
+  "SELECT event_type, count() AS cnt FROM package_events FINAL GROUP BY event_type ORDER BY cnt DESC LIMIT 20"
 ```
 
 > **Note:** Filter by `event_type`, not `package_id`. After package upgrades, `package_id` is the executing package ID; `event_type` keeps the original type path.
 
 ---
 
+## ClickHouse (events store)
+
+Local-only hot/cold tier: SSD hot volume (≤3 days), HDD cold volume (>3 days). TTL `MOVE` — no DELETE, no S3.
+
+### Start ClickHouse (Docker)
+
+```bash
+cd examples/clickhouse
+cp .env.example .env   # set CLICKHOUSE_PASSWORD
+docker compose up -d
+chmod +x init-clickhouse.sh
+./init-clickhouse.sh
+```
+
+Credentials live in `clickhouse/.env` (gitignored) — **not** in `docker-compose.yml`. Copy the same `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` into indexer and rpc-service `.env`.
+
+### Web UI (Tabix — included in Docker)
+
+`docker-compose.yml` includes **Tabix** (browser SQL client).
+
+```bash
+cd examples/clickhouse
+docker compose up -d    # starts clickhouse + tabix
+```
+
+Open **http://127.0.0.1:8124** → **Add server**:
+
+| Field | Value |
+|-------|-------|
+| Name | `local` (any label) |
+| HTTP host | `http://127.0.0.1:8123` |
+| Login | `default` (or `CLICKHOUSE_USER` from `.env`) |
+| Password | from `clickhouse/.env` |
+| Database | `sui_indexer` |
+
+Then browse `package_events`, run SQL, export results.
+
+> Tabix talks to ClickHouse from **your browser** → use `127.0.0.1:8123`, not the Docker service name.
+
+### Desktop UI (DBeaver — optional)
+
+Full GUI on macOS:
+
+```bash
+brew install --cask dbeaver-community
+```
+
+**New connection** → **ClickHouse** → settings:
+
+| Field | Value |
+|-------|-------|
+| Host | `localhost` |
+| Port | `8123` (HTTP) |
+| Database | `sui_indexer` |
+| Username / Password | from `clickhouse/.env` |
+
+Useful for ER diagrams, query history, and editing alongside Postgres (`5432`).
+
+### CLI client (terminal)
+
+```bash
+brew install clickhouse
+# or: brew install --cask clickhouse
+```
+
+```bash
+source examples/clickhouse/.env
+clickhouse client \
+  --host localhost --port 9009 \
+  --user "$CLICKHOUSE_USER" --password "$CLICKHOUSE_PASSWORD" \
+  --database sui_indexer
+```
+
+(`9009` = native protocol mapped in `docker-compose.yml`; HTTP port `8123` is for curl/rpc/indexer.)
+
+
+| Variable | Default | Description |
+|---|---|---|
+| `CLICKHOUSE_URL` | — | HTTP endpoint, e.g. `http://localhost:8123` |
+| `CLICKHOUSE_DATABASE` | `sui_indexer` | Database name |
+| `CLICKHOUSE_USER` / `CLICKHOUSE_PASSWORD` | from `clickhouse/.env` | Required for host HTTP access |
+
+### Useful queries
+
+```bash
+# Row count
+curl -s 'http://127.0.0.1:8123/?database=sui_indexer' --data \
+  "SELECT count() FROM package_events FINAL"
+
+# Disk usage by volume (hot vs cold parts)
+curl -s 'http://127.0.0.1:8123/' --data \
+  "SELECT disk_name, sum(bytes_on_disk) AS bytes FROM system.parts WHERE table='package_events' AND active GROUP BY disk_name"
+```
+
+### Hot/cold SLA benchmark
+
+Same `suix_queryEvents` API; latency differs by tier (HDD cold vs SSD hot):
+
+```bash
+cd examples
+# Local vs fullnode (default)
+./scripts/bench-query-events-latency.sh
+
+# Hot vs cold tier on local rpc-service
+BENCH_HOT_COLD=1 ./scripts/bench-query-events-latency.sh
+```
+
+| Tier | Target latency | Notes |
+|------|----------------|-------|
+| Hot (≤3 days) | ~ms–100ms | Bot / realtime queries |
+| Cold (>3 days) | ~100ms–few seconds | Historical backfill; local HDD |
+
+### Retention (replaces PostgreSQL prune)
+
+**Deprecated:** `scripts/prune-package-events.*` — events are never deleted. Parts older than 3 days move to the cold HDD volume via ClickHouse TTL. Monitor cold disk usage and expand HDD as needed.
+
+---
+
 ## simple-sui-indexer
 
-Config lives in `simple-sui-indexer/.env` (`DATABASE_URL`, `EVENT_TYPE_PREFIXES`).
+Config lives in `simple-sui-indexer/.env` (`DATABASE_URL`, `CLICKHOUSE_URL`, `EVENT_TYPE_PREFIXES`).
 
 Optional env vars:
 
 | Variable | Default | Description |
 |---|---|---|
 | `LOG_EVERY_N_CHECKPOINTS` | `100` | Progress log interval |
+| `CLICKHOUSE_URL` | — | Required — ClickHouse HTTP endpoint |
+| `CLICKHOUSE_DATABASE` | `sui_indexer` | Target database |
 | `RUST_LOG` | — | e.g. `info`, `debug` |
-
-### Prune old events (3-day retention)
-
-`package_events` can grow quickly. Prune by `timestamp_ms` (checkpoint time), **batched DELETE**, safe while indexer + rpc-service run.
-
-```bash
-cd examples
-
-# Preview rows to delete
-chmod +x scripts/prune-package-events.sh
-./scripts/prune-package-events.sh --dry-run
-
-# Run now (default: keep last 3 days)
-./scripts/prune-package-events.sh
-
-# Custom retention / batch size
-RETENTION_DAYS=3 BATCH_SIZE=5000 ./scripts/prune-package-events.sh
-```
-
-**Daily cron** (default **23:55** every day):
-
-```bash
-chmod +x scripts/install-prune-package-events-cron.sh
-./scripts/install-prune-package-events-cron.sh
-
-# Custom schedule (cron(5)), e.g. 00:30 UTC
-CRON_SCHEDULE='30 0 * * *' ./scripts/install-prune-package-events-cron.sh
-```
-
-Log: `simple-sui-indexer/prune-package-events.log`. Uses `DATABASE_URL` from `simple-sui-indexer/.env`.
-
-> Prune only deletes `package_events` rows. **Watermarks are unchanged** — indexer does not re-backfill pruned history; RPC `queryEvents` only returns the retained window.
 
 Decode is **sync static BCS** via `event-bindings` — zero fullnode RPC at index time. Unknown event types within a matched prefix **fail the checkpoint** (add binding + rebuild).
 
@@ -591,7 +675,9 @@ kill -0 "$(cat simple-sui-indexer/indexer.pid)" 2>/dev/null \
 
 ## rpc-service
 
-Config: `rpc-service/.env` (`DATABASE_URL`, `RPC_PORT`, `RUST_LOG`).
+Config: `rpc-service/.env` (`CLICKHOUSE_URL`, `CLICKHOUSE_DATABASE`, `RPC_PORT`, `RUST_LOG`).
+
+Reads **ClickHouse only** (`package_events` with `FINAL` for dedup). Same JSON-RPC shape as before.
 
 ### Build & run
 
@@ -670,15 +756,16 @@ Backfills from the indexed event JSON (`json->>'type'`). New rows from the index
 | Data scope | All on-chain events | Only indexed prefix packages |
 | `parsedJson` | Fullnode decode | Static BCS bindings (`event-bindings/`) |
 | Sync lag | Live chain tip | Indexer watermark — may trail fullnode |
-| Unknown cursor | Fullnode error | `-32602` if `(txDigest, eventSeq)` not in DB |
+| Unknown cursor | Fullnode error | `-32602` if `(txDigest, eventSeq)` not in ClickHouse |
+| Hot/cold latency | N/A | Hot SSD ~ms–100ms; cold HDD slower (see bench) |
 | `packageId` casing | Lowercase hex | Lowercase hex (unchanged) |
 
 ### Test ASC pagination order
 
-Automated check: paginate RPC with `descending=false`, load `(checkpoint, tx_index, event_index)` from DB for each event, assert strictly increasing within and across pages.
+Automated check: paginate RPC with `descending=false`, load stream position from ClickHouse for each event.
 
 ```bash
-# rpc-service + postgres must be running
+# rpc-service + ClickHouse must be running
 chmod +x scripts/test-query-events-asc-order.sh
 ./scripts/test-query-events-asc-order.sh
 
@@ -689,16 +776,16 @@ MOVE_EVENT_TYPE='0x91bf...::pool::SwapEvent' LIMIT=20 MAX_PAGES=3 ./scripts/test
 COMPARE_FULLNODE=1 ./scripts/test-query-events-asc-order.sh
 ```
 
-Manual SQL sanity check (oldest first):
+Manual ClickHouse sanity check (oldest first):
 
 ```bash
-psql postgres://postgres:postgres@localhost:5432/sui_indexer -c "
-  SELECT event_id_tx_digest, event_id_seq,
-         checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction
-  FROM package_events
-  WHERE event_type ILIKE '0x1eab%::pool::SwapEvent'
-  ORDER BY checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction
-  LIMIT 10;"
+curl -s 'http://127.0.0.1:8123/?database=sui_indexer' --data \
+  "SELECT event_id_tx_digest, event_id_seq, checkpoint_sequence_number, \
+          transaction_sequence_in_checkpoint, event_sequence_in_transaction \
+   FROM package_events FINAL \
+   WHERE event_type ILIKE '0x1eab%::pool::SwapEvent' \
+   ORDER BY checkpoint_sequence_number, transaction_sequence_in_checkpoint, event_sequence_in_transaction \
+   LIMIT 10 FORMAT Pretty"
 ```
 
 ### Bot sandwich statistics (same-checkpoint)
@@ -725,7 +812,7 @@ Env vars (defaults in script):
 
 | Var | Default |
 |-----|---------|
-| `DATABASE_URL` | from `.env` or `postgres://postgres:postgres@localhost:5432/sui_indexer` |
+| `CLICKHOUSE_URL` | `http://127.0.0.1:8123` |
 | `BOT_ADDRESS` | `0xf3981a28e88f86255713dada5d7b1ebb23b0b9e499e80fa1406bdd74c3364735` |
 | `SWAP_EVENT_TYPE` | `0x1eab...::pool::SwapEvent` |
 | `VERBOSE` | `0` (stdout detail only) |
@@ -816,7 +903,7 @@ POOL_ID=0x... python3 scripts/analyze_trap_outcome.py
 
 ## reconciliation
 
-Config: `reconciliation/.env` (copy from `reconciliation/.env.example`).
+Config: `reconciliation/.env` (`CLICKHOUSE_URL`, `RECON_MOVE_EVENT_TYPE`, …).
 
 ### Run Phase 2 (count + key diff)
 

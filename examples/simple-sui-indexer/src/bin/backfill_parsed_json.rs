@@ -1,5 +1,6 @@
-//! Backfill `parsed_json` for historical rows using static BCS decode (no fullnode RPC).
-use anyhow::{Context, Result};
+//! DEPRECATED: package_events moved to ClickHouse. Re-ingest with new bindings
+//! via ReplacingMergeTree inserts instead of PostgreSQL UPDATE.
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use diesel::prelude::*;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
@@ -44,6 +45,13 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+    let _ = args;
+    bail!(
+        "backfill-parsed-json is deprecated: package_events lives in ClickHouse. \
+         Decode at ingest; for new bindings re-insert rows with ReplacingMergeTree."
+    );
+
+    #[allow(unreachable_code)]
     let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
 
     let mut conn = AsyncPgConnection::establish(&database_url).await?;

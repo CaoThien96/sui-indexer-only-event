@@ -1,9 +1,13 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use clickhouse::Client;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub database_url: String,
+    pub clickhouse_url: String,
+    pub clickhouse_database: String,
+    pub clickhouse_user: Option<String>,
+    pub clickhouse_password: Option<String>,
     pub fullnode_url: String,
     pub move_event_type: String,
     pub count_tolerance: i64,
@@ -15,7 +19,13 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self> {
-        let database_url = std::env::var("DATABASE_URL").context("DATABASE_URL must be set")?;
+        let clickhouse_url = std::env::var("CLICKHOUSE_URL")
+            .context("CLICKHOUSE_URL must be set (e.g. http://localhost:8123)")?;
+        let clickhouse_database = std::env::var("CLICKHOUSE_DATABASE")
+            .unwrap_or_else(|_| "sui_indexer".to_string());
+        let clickhouse_user = std::env::var("CLICKHOUSE_USER").ok();
+        let clickhouse_password = std::env::var("CLICKHOUSE_PASSWORD").ok();
+
         let fullnode_url = std::env::var("FULLNODE_URL")
             .unwrap_or_else(|_| "https://fullnode.mainnet.sui.io:443".to_string());
 
@@ -64,7 +74,10 @@ impl Config {
         let window_start = window_end - chrono::Duration::hours(window_hours);
 
         Ok(Self {
-            database_url,
+            clickhouse_url,
+            clickhouse_database,
+            clickhouse_user,
+            clickhouse_password,
             fullnode_url,
             move_event_type,
             count_tolerance,
@@ -73,6 +86,21 @@ impl Config {
             window_start,
             window_end,
         })
+    }
+
+    pub fn clickhouse_client(&self) -> Client {
+        let mut client = Client::default()
+            .with_url(&self.clickhouse_url)
+            .with_database(&self.clickhouse_database);
+
+        if let Some(user) = &self.clickhouse_user {
+            client = client.with_user(user.clone());
+        }
+        if let Some(password) = &self.clickhouse_password {
+            client = client.with_password(password.clone());
+        }
+
+        client
     }
 
     pub fn indexer_event_type(&self) -> &str {

@@ -1,10 +1,7 @@
-use diesel::prelude::*;
 use serde_json::Value;
 use sui_indexer_alt_framework::FieldCount;
-use crate::schema::package_events;
 
-#[derive(Insertable, Debug, Clone, FieldCount)]
-#[diesel(table_name = package_events)]
+#[derive(Debug, Clone, FieldCount)]
 pub struct StoredPackageEvent {
     pub event_id_tx_digest: String,
     pub event_id_seq: i64,
