@@ -1,4 +1,3 @@
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use clickhouse::Row;
 use serde::Deserialize;
 use serde_json::Value;
@@ -14,7 +13,6 @@ pub struct PackageEventChRow {
     pub sender: Option<String>,
     pub timestamp_ms: Option<i64>,
     pub bcs: String,
-    pub json: String,
     pub parsed_json: Option<String>,
 }
 
@@ -28,8 +26,7 @@ pub struct PackageEventRow {
     pub event_type: String,
     pub sender: Option<String>,
     pub timestamp_ms: Option<i64>,
-    pub bcs: Vec<u8>,
-    pub json: Value,
+    pub bcs: String,
     pub parsed_json: Option<Value>,
 }
 
@@ -44,8 +41,7 @@ impl From<PackageEventChRow> for PackageEventRow {
             event_type: row.event_type,
             sender: row.sender,
             timestamp_ms: row.timestamp_ms,
-            bcs: STANDARD.decode(&row.bcs).unwrap_or_default(),
-            json: serde_json::from_str(&row.json).unwrap_or(Value::Null),
+            bcs: row.bcs,
             parsed_json: row
                 .parsed_json
                 .as_deref()

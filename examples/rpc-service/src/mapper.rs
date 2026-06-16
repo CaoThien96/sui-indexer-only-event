@@ -1,4 +1,3 @@
-use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
 
 use crate::db::PackageEventRow;
@@ -14,7 +13,7 @@ pub fn row_to_sui_event(row: &PackageEventRow) -> Value {
         "sender": row.sender,
         "type": row.event_type,
         "parsedJson": row.parsed_json.clone().unwrap_or(Value::Null),
-        "bcs": STANDARD.encode(&row.bcs),
+        "bcs": row.bcs,
         "timestampMs": row.timestamp_ms.map(|ms| ms.to_string()),
     })
 }
@@ -55,8 +54,7 @@ mod tests {
             event_type: "0xpkg::pool::SwapEvent".to_string(),
             sender: Some("0xsender".to_string()),
             timestamp_ms: Some(1_234_567_890),
-            bcs: vec![1, 2, 3],
-            json: json!({ "sender": "0xsender" }),
+            bcs: "AQID".to_string(),
             parsed_json: Some(json!({ "pool": "0xpool", "amount_in": "100" })),
         };
 
@@ -80,8 +78,7 @@ mod tests {
                 event_type: "0x1::m::e".into(),
                 sender: None,
                 timestamp_ms: None,
-                bcs: vec![],
-                json: json!(null),
+                bcs: String::new(),
                 parsed_json: None,
             },
             PackageEventRow {
@@ -93,8 +90,7 @@ mod tests {
                 event_type: "0x1::m::e".into(),
                 sender: None,
                 timestamp_ms: None,
-                bcs: vec![],
-                json: json!(null),
+                bcs: String::new(),
                 parsed_json: None,
             },
         ];

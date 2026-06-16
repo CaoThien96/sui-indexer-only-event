@@ -145,8 +145,8 @@ def find_tier_cursor(event_type: str, hot: bool) -> dict[str, str] | None:
     )
     sql = f"""
 SELECT event_id_tx_digest, event_id_seq
-FROM package_events FINAL
-WHERE event_type ILIKE '{event_type.replace("'", "''")}'
+FROM package_events
+WHERE event_type = '{event_type.replace("'", "''")}'
   AND {age_clause}
 ORDER BY checkpoint_sequence_number DESC,
          transaction_sequence_in_checkpoint DESC,

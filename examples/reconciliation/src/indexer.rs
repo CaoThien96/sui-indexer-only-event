@@ -14,8 +14,8 @@ pub async fn count_events_in_window(
 ) -> Result<i64> {
     let count: u64 = client
         .query(
-            "SELECT count() FROM package_events FINAL \
-             WHERE event_type ILIKE ? \
+            "SELECT count() FROM package_events \
+             WHERE event_type = ? \
                AND timestamp_ms >= ? \
                AND timestamp_ms <= ?",
         )
@@ -43,8 +43,8 @@ pub async fn list_event_keys_in_window(
 ) -> Result<HashSet<EventKey>> {
     let rows = client
         .query(
-            "SELECT event_id_tx_digest, event_id_seq FROM package_events FINAL \
-             WHERE event_type ILIKE ? \
+            "SELECT event_id_tx_digest, event_id_seq FROM package_events \
+             WHERE event_type = ? \
                AND timestamp_ms >= ? \
                AND timestamp_ms <= ?",
         )
@@ -71,7 +71,7 @@ pub async fn max_indexed_timestamp_ms(client: &Client) -> Result<Option<i64>> {
     }
 
     let row = client
-        .query("SELECT max(timestamp_ms) AS max_ts FROM package_events FINAL")
+        .query("SELECT max(timestamp_ms) AS max_ts FROM package_events")
         .fetch_one::<MaxRow>()
         .await
         .context("ClickHouse max timestamp query failed")?;
