@@ -679,17 +679,95 @@ Config: `rpc-service/.env` (`CLICKHOUSE_URL`, `CLICKHOUSE_DATABASE`, `RPC_PORT`,
 
 Reads **ClickHouse only** (`package_events` with `FINAL` for dedup). Same JSON-RPC shape as before.
 
-### Build & run
+> **Binary path:** `rpc-service` is a **workspace member** of the repo root [`Cargo.toml`](../Cargo.toml).  
+> `cargo build --release` from `examples/rpc-service/` writes the binary to **`../../target/release/rpc-service`** (repo root), **not** `rpc-service/target/`.  
+> (`simple-sui-indexer` is different — it has its own `[workspace]` and uses `simple-sui-indexer/target/`.)
+
+### Build & run (foreground)
 
 ```bash
-cd rpc-service
-export LIBRARY_PATH="/opt/homebrew/opt/libpq/lib:$LIBRARY_PATH"
-export CPATH="/opt/homebrew/opt/libpq/include:$CPATH"
-
+cd examples/rpc-service
+cargo build --release
 cargo run --release
 ```
 
-Default: `http://127.0.0.1:9000`
+Or from repo root:
+
+```bash
+cd /Users/thiencao/Desktop/sui-indexer
+cargo build --release -p rpc-service
+./target/release/rpc-service
+```
+
+Default: `http://127.0.0.1:9000` (or `RPC_PORT` from `.env`). Loads `rpc-service/.env` automatically when cwd is `examples/rpc-service`.
+
+### Start in background + log file
+
+**Build release binary first:**
+
+```bash
+cd examples/rpc-service
+cargo build --release
+# binary: ../../target/release/rpc-service
+```
+
+```bash
+cd examples/rpc-service
+export RUST_LOG=info
+
+nohup ../../target/release/rpc-service > rpc.log 2>&1 &
+
+echo $! > rpc.pid
+echo "Started PID $(cat rpc.pid), logging to rpc.log"
+```
+
+With line-buffered logs (if `stdbuf` available):
+
+```bash
+cd examples/rpc-service
+export RUST_LOG=info
+
+nohup stdbuf -eL ../../target/release/rpc-service > rpc.log 2>&1 &
+
+echo $! > rpc.pid
+```
+
+Quick sanity check:
+
+```bash
+cd examples/rpc-service
+test -x ../../target/release/rpc-service && echo "binary OK" || echo "run: cargo build --release"
+curl -sf http://127.0.0.1:9000/health
+```
+
+### Follow logs
+
+```bash
+cd rpc-service
+tail -f rpc.log
+```
+
+### Stop rpc-service
+
+```bash
+cd rpc-service
+kill "$(cat rpc.pid)"
+
+# Force stop if needed
+kill -9 "$(cat rpc.pid)"
+
+# Or by name
+pkill -f rpc-service
+```
+
+### Check rpc-service is running
+
+```bash
+kill -0 "$(cat rpc-service/rpc.pid)" 2>/dev/null \
+  && echo "running" || echo "not running"
+
+curl -s http://127.0.0.1:9000/health
+```
 
 ### Health check
 

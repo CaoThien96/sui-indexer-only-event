@@ -85,6 +85,26 @@ pub fn parse_query_events_params(params: &serde_json::Value) -> Result<QueryEven
     })
 }
 
+pub fn event_filter_label(filter: &EventFilter) -> String {
+    match filter {
+        EventFilter::MoveEventType(event_type) => {
+            let short = if event_type.len() > 80 {
+                format!("{}...", &event_type[..80])
+            } else {
+                event_type.clone()
+            };
+            format!("MoveEventType({short})")
+        }
+        EventFilter::MoveModule { package, module } => {
+            format!("MoveModule({package}::{module})")
+        }
+        EventFilter::MoveEventModule { package, module } => {
+            format!("MoveEventModule({package}::{module})")
+        }
+        EventFilter::Sender(sender) => format!("Sender({sender})"),
+    }
+}
+
 fn parse_cursor(value: &serde_json::Value) -> Result<EventIdCursor> {
     let tx_digest = value
         .get("txDigest")
