@@ -21,15 +21,6 @@ services:
       timeout: 3s
       retries: 10
 
-  # Web UI — open http://127.0.0.1:8124 and add HTTP connection to ClickHouse
-  tabix:
-    image: spoonest/clickhouse-tabix-web-client:latest
-    ports:
-      - "8124:80"
-    depends_on:
-      clickhouse:
-        condition: service_healthy
-
 volumes:
   clickhouse_hot:
   clickhouse_cold:

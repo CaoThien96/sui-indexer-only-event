@@ -9,3 +9,5 @@ dist/
 **/indexer.pid
 indexer.log
 indexer.pid
+
+**/**/rpc.log
