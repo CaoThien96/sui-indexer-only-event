@@ -8,6 +8,7 @@ services:
       - .env
     volumes:
       - ./config.d/storage.xml:/etc/clickhouse-server/config.d/storage.xml:ro
+      - ./config.d/logs-retention.xml:/etc/clickhouse-server/config.d/logs-retention.xml:ro
       - clickhouse_hot:/var/lib/clickhouse/hot
       - clickhouse_cold:/var/lib/clickhouse/cold
       - clickhouse_data:/var/lib/clickhouse

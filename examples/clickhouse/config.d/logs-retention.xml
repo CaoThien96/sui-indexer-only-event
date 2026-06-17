@@ -1,0 +1,31 @@
+<clickhouse>
+  <!-- Keep only essential logs in local/dev environments -->
+  <query_log remove="remove" />
+  <query_thread_log remove="remove" />
+  <query_views_log remove="remove" />
+  <processors_profile_log remove="remove" />
+  <trace_log remove="remove" />
+  <text_log remove="remove" />
+
+  <!-- Retain lightweight metrics for short troubleshooting windows -->
+  <metric_log>
+    <database>system</database>
+    <table>metric_log</table>
+    <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    <engine>Engine = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_time) TTL event_time + INTERVAL 3 DAY</engine>
+  </metric_log>
+
+  <asynchronous_metric_log>
+    <database>system</database>
+    <table>asynchronous_metric_log</table>
+    <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    <engine>Engine = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_time) TTL event_time + INTERVAL 3 DAY</engine>
+  </asynchronous_metric_log>
+
+  <part_log>
+    <database>system</database>
+    <table>part_log</table>
+    <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    <engine>Engine = MergeTree PARTITION BY toYYYYMM(event_date) ORDER BY (event_time) TTL event_time + INTERVAL 3 DAY</engine>
+  </part_log>
+</clickhouse>
