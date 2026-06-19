@@ -1,13 +1,15 @@
 mod bootstrap;
 mod config;
 mod pipelines;
+mod runtime_tuning;
 
 use anyhow::{Result, bail};
 use bootstrap::{IndexerRuntime, log_key_builtin_metrics};
 use config::{
-    AppArgs, ingestion_config, kafka_client_id, log_indexer_args, log_metrics_endpoint,
-    metrics_prefix_from_env, require_database_url, require_kafka_brokers,
+    AppArgs, kafka_client_id, log_indexer_args, log_metrics_endpoint, metrics_prefix_from_env,
+    require_database_url, require_kafka_brokers,
 };
+use runtime_tuning::{db_args, ingestion_config, sequential_config};
 use diesel_migrations::{EmbeddedMigrations, embed_migrations};
 use indexer_store::PostgresStore;
 use pipelines::{
@@ -16,24 +18,10 @@ use pipelines::{
     dex_swap::{self, DexSwapHandler},
     token_metadata::{self, TokenMetadataHandler},
 };
-use sui_indexer_alt_framework::{
-    pipeline::{CommitterConfig, sequential::SequentialConfig},
-    service::Error,
-};
+use sui_indexer_alt_framework::service::Error;
 use tracing::info;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
-const COLLECT_INTERVAL_MS: u64 = 500;
-
-fn sequential_config() -> SequentialConfig {
-    SequentialConfig {
-        committer: CommitterConfig {
-            collect_interval_ms: COLLECT_INTERVAL_MS,
-            ..Default::default()
-        },
-        ..Default::default()
-    }
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -56,8 +44,7 @@ async fn main() -> Result<()> {
         info!(metrics_prefix = %prefix, "Using Prometheus metric name prefix");
     }
 
-    let pg =
-        PostgresStore::for_write(database_url.clone(), indexer_store::DbArgs::default()).await?;
+    let pg = PostgresStore::for_write(database_url.clone(), db_args()).await?;
     pg.run_migrations(MIGRATIONS).await?;
     info!("Postgres migrations applied (watermarks only)");
 
@@ -79,33 +66,21 @@ async fn main() -> Result<()> {
         .indexer
         .sequential_pipeline(dex_swap.clone(), sequential_config())
         .await?;
-    info!(
-        pipeline = dex_swap::NAME,
-        collect_interval_ms = COLLECT_INTERVAL_MS,
-        "DEX swap pipeline registered"
-    );
+    info!(pipeline = dex_swap::NAME, "DEX swap pipeline registered");
 
     let dex_pool = DexPoolHandler::new(app_metrics.clone());
     runtime
         .indexer
         .sequential_pipeline(dex_pool.clone(), sequential_config())
         .await?;
-    info!(
-        pipeline = dex_pool::NAME,
-        collect_interval_ms = COLLECT_INTERVAL_MS,
-        "DEX pool pipeline registered"
-    );
+    info!(pipeline = dex_pool::NAME, "DEX pool pipeline registered");
 
     let token_metadata = TokenMetadataHandler::new(app_metrics);
     runtime
         .indexer
         .sequential_pipeline(token_metadata.clone(), sequential_config())
         .await?;
-    info!(
-        pipeline = token_metadata::NAME,
-        collect_interval_ms = COLLECT_INTERVAL_MS,
-        "Token metadata pipeline registered"
-    );
+    info!(pipeline = token_metadata::NAME, "Token metadata pipeline registered");
 
     log_key_builtin_metrics(&runtime.indexer, dex_swap::NAME);
     log_key_builtin_metrics(&runtime.indexer, dex_pool::NAME);

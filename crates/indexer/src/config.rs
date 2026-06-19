@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use http::Uri;
-use sui_indexer_alt_framework::{IndexerArgs, cluster::Args, ingestion::IngestionConfig};
+use sui_indexer_alt_framework::{IndexerArgs, cluster::Args};
 use tracing::info;
 use url::Url;
 
@@ -117,11 +117,6 @@ pub fn log_metrics_endpoint(args: &Args) {
         metrics_url = format!("http://{addr}/metrics"),
         "Prometheus metrics endpoint"
     );
-}
-
-/// Default ingestion config; tune per docs/07-indexer-optimization-checklist.md (Week 7+).
-pub fn ingestion_config() -> IngestionConfig {
-    IngestionConfig::default()
 }
 
 #[derive(Parser, Debug)]

@@ -81,16 +81,18 @@ gantt
 
 | Task | Exit criteria |
 |------|---------------|
-| Mainnet GCS backfill | Catches up to tip |
+| HTTPS backfill + gRPC steady state | Catches up to tip (≤30d via HTTPS; GCS deferred) |
 | Runtime tuning per official perf docs | Lag < 30s steady state |
 | Phase 1 gate checklist | All pass |
 
+**Detailed plan:** [plans/week-07-hardening.md](./plans/week-07-hardening.md)
+
 **Phase 1 gate:**
-- [ ] Production code only in `crates/` — zero dependency on `examples/`
-- [ ] GCS backfill (not HTTPS-only)
-- [ ] Kafka = primary BYOS commit
-- [ ] ≥ 4 DEX protocols
-- [ ] Prometheus watermark alerts
+- [x] Production code only in `crates/` — zero dependency on `examples/`
+- [ ] GCS backfill — **deferred** (HTTPS-only accepted for Phase 1; >30d when budget allows)
+- [x] Kafka = primary BYOS commit
+- [x] ≥ 4 DEX protocols (6: Cetus, Turbos, Bluefin, MMT, FlowX, Magma)
+- [x] Prometheus watermark alerts (`infra/prometheus/alerts.yml`)
 
 ---
 

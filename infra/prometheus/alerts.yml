@@ -1,0 +1,51 @@
+# Watermark lag alerts for sui-token-indexer (Phase 1 gate).
+# Metric prefix defaults to "indexer"; set METRICS_PREFIX in .env if customized.
+groups:
+  - name: sui-token-indexer
+    rules:
+      - alert: IndexerIngestionLagHigh
+        expr: indexer_latest_ingested_checkpoint_timestamp_lag_ms > 30000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Indexer ingestion lag exceeds 30s
+          description: >-
+            Checkpoint timestamp lag at ingestion is {{ $value }}ms
+            (threshold 30000ms). Check gRPC streaming, remote store, or
+            INDEXER_RUNTIME_MODE=backfill tuning.
+
+      - alert: IndexerPipelineWatermarkLagHigh
+        expr: indexer_latest_watermarked_checkpoint_timestamp_lag_ms > 30000
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Pipeline {{ $labels.pipeline }} watermark lag exceeds 30s
+          description: >-
+            Watermark timestamp lag for pipeline {{ $labels.pipeline }} is
+            {{ $value }}ms. Check Kafka produce latency or pipeline commit errors.
+
+      - alert: IndexerPipelineWatermarkStalled
+        expr: |
+          changes(indexer_watermark_checkpoint_in_db[10m]) == 0
+          and indexer_latest_ingested_checkpoint > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Pipeline {{ $labels.pipeline }} watermark not advancing
+          description: >-
+            Watermark checkpoint for {{ $labels.pipeline }} unchanged for 10m
+            while ingestion is active. Check handler errors and Kafka BYOS commit.
+
+      - alert: IndexerDecodeErrorsSpike
+        expr: increase(indexer_decode_errors_total[5m]) > 10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: BCS decode errors spiking on {{ $labels.pipeline }}
+          description: >-
+            {{ $value }} decode errors in 5m for {{ $labels.protocol }} /
+            {{ $labels.event_type }}.

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use indexer_store::{CompositeStore, DbArgs, KafkaFactWriter, PostgresStore};
+use crate::runtime_tuning::db_args;
+use indexer_store::{CompositeStore, KafkaFactWriter, PostgresStore};
 use prometheus::Registry;
 use sui_indexer_alt_framework::cluster::Args;
 use sui_indexer_alt_framework::{Indexer, ingestion::IngestionConfig, service::Error};
@@ -34,7 +35,7 @@ impl IndexerRuntime {
             .context("failed to register uptime metric")?;
 
         let kafka = KafkaFactWriter::new(kafka_brokers, kafka_client_id, &registry)?;
-        let pg = PostgresStore::for_write(database_url, DbArgs::default()).await?;
+        let pg = PostgresStore::for_write(database_url, db_args()).await?;
         let store = CompositeStore::new(pg, kafka);
 
         let metrics = MetricsService::new(args.metrics_args.clone(), registry);
