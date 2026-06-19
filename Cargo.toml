@@ -4,7 +4,8 @@ members = [
     "crates/indexer",
     "crates/indexer-store",
     "crates/event-bindings",
-    "examples/rpc-service"
+    "examples/rpc-service",
+    "tools/reconciliation",
 ]
 
 [workspace.package]
@@ -37,3 +38,8 @@ scoped-futures = "0.1"
 sha2 = "0.10"
 hex = "0.4"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+[patch."https://github.com/MystenLabs/move-binding"]
+move-binding = { path = "crates/event-bindings/vendor/move-binding/move-binding" }
+move-binding-derive = { path = "crates/event-bindings/vendor/move-binding/move-binding-derive" }
+move-types = { path = "crates/event-bindings/vendor/move-binding/move-types" }

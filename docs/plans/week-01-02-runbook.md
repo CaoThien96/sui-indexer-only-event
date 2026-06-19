@@ -8,29 +8,32 @@
 - Docker + Docker Compose
 - macOS: `brew install cmake` (required for `rdkafka` cmake-build)
 
-## 1. Start local infra
+## 1. Configure environment
 
 ```bash
-cd infra
-docker compose up -d
-docker compose ps   # postgres + kafka healthy
+cp .env.example .env
+# Edit POSTGRES_* / DATABASE_URL if needed (keep them in sync)
+```
+
+## 2. Start local infra
+
+Run from **repo root** so Compose picks up `.env` for Postgres credentials (project name: `sui-indexer-local`):
+
+```bash
+docker compose -f infra/docker-compose.yml --env-file .env up -d
+docker compose -f infra/docker-compose.yml ps   # postgres + kafka healthy
 ```
 
 Create Kafka topics (6 partitions, 7d retention):
 
 ```bash
-chmod +x kafka/create-topics.sh
-./kafka/create-topics.sh
-```
-
-## 2. Configure environment
-
-```bash
-cp .env.example .env
-# Edit .env if needed (defaults target local Postgres + Kafka + testnet ingestion)
+chmod +x infra/kafka/create-topics.sh
+./infra/kafka/create-topics.sh
 ```
 
 ## 3. Build and run indexer
+
+From repo root (`.env` loaded by `cargo`/indexer via `dotenvy`):
 
 ```bash
 cargo build --workspace
@@ -96,8 +99,9 @@ Run with testnet URLs in `.env`, monitor:
 |---------|-----|
 | `rdkafka` build error on macOS | `brew install cmake`, retry `cargo build` |
 | Kafka connection refused | `docker compose ps`, wait for kafka healthy, check `KAFKA_BROKERS=localhost:9092` |
-| Migration error | Drop DB volume or `docker compose down -v` and recreate |
+| Migration error | Drop DB volume or `docker compose -f infra/docker-compose.yml down -v` and recreate |
 | `DATABASE_URL` missing | Copy `.env.example` → `.env` |
+| Postgres auth failed | Ensure `POSTGRES_*` in `.env` matches `DATABASE_URL`; recreate container after password change |
 | HTTPS checkpoint fetch fails | Ensure rustls crypto provider installed (done in `main.rs`) |
 | No Kafka messages | Run `./infra/kafka/create-topics.sh`; check producer errors metric `indexer_kafka_produce_errors_total` |
 

@@ -11,8 +11,15 @@ TOPICS=(
   "token.metadata.raw.v1"
 )
 
+COMPOSE_FILE="$(dirname "$0")/../docker-compose.yml"
+ENV_FILE="$(dirname "$0")/../../.env"
+COMPOSE_ARGS=(-f "$COMPOSE_FILE")
+if [[ -f "$ENV_FILE" ]]; then
+  COMPOSE_ARGS+=(--env-file "$ENV_FILE")
+fi
+
 for topic in "${TOPICS[@]}"; do
-  docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T kafka \
+  docker compose "${COMPOSE_ARGS[@]}" exec -T kafka \
     /opt/kafka/bin/kafka-topics.sh \
     --bootstrap-server "${BOOTSTRAP}" \
     --create \
@@ -24,5 +31,5 @@ for topic in "${TOPICS[@]}"; do
   echo "Topic ready: ${topic}"
 done
 
-docker compose -f "$(dirname "$0")/../docker-compose.yml" exec -T kafka \
+docker compose "${COMPOSE_ARGS[@]}" exec -T kafka \
   /opt/kafka/bin/kafka-topics.sh --bootstrap-server "${BOOTSTRAP}" --list

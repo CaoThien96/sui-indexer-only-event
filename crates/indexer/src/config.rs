@@ -1,13 +1,62 @@
 use std::net::SocketAddr;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use http::Uri;
 use sui_indexer_alt_framework::{IndexerArgs, cluster::Args, ingestion::IngestionConfig};
 use tracing::info;
 use url::Url;
 
-/// Merge environment variables into CLI args after `dotenvy` load.
+fn argv_has_flag(argv: &[String], flag: &str) -> bool {
+    argv.iter().any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+}
+
+/// Framework `remote_store_url` has no `env =` attribute; inject `.env` values before clap parse.
+fn inject_env_cli_args(argv: &mut Vec<String>) -> Result<()> {
+    if !argv_has_flag(argv, "--remote-store-url") {
+        if let Ok(raw) = std::env::var("REMOTE_STORE_URL") {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                argv.push("--remote-store-url".to_string());
+                argv.push(trimmed.to_string());
+            }
+        }
+    }
+
+    if !argv_has_flag(argv, "--streaming-url") {
+        if let Ok(raw) = std::env::var("STREAMING_URL") {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                argv.push("--streaming-url".to_string());
+                argv.push(trimmed.to_string());
+            }
+        }
+    }
+
+    if !argv_has_flag(argv, "--first-checkpoint") {
+        if let Ok(raw) = std::env::var("FIRST_CHECKPOINT") {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                argv.push("--first-checkpoint".to_string());
+                argv.push(trimmed.to_string());
+            }
+        }
+    }
+
+    if !argv_has_flag(argv, "--metrics-address") {
+        if let Ok(raw) = std::env::var("METRICS_ADDRESS") {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                argv.push("--metrics-address".to_string());
+                argv.push(trimmed.to_string());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Merge environment variables into CLI args after `dotenvy` load (non-clap fields / overrides).
 pub fn apply_env_overrides(args: &mut Args) -> Result<()> {
     if let Ok(raw) = std::env::var("METRICS_ADDRESS") {
         let trimmed = raw.trim();
@@ -84,8 +133,23 @@ pub struct AppArgs {
 impl AppArgs {
     pub fn parse_with_env() -> Result<Self> {
         dotenvy::dotenv().ok();
-        let mut args = Args::parse();
+        let mut argv: Vec<String> = std::env::args().collect();
+        inject_env_cli_args(&mut argv)?;
+        let mut args = Args::parse_from(argv);
         apply_env_overrides(&mut args)?;
+
+        if args.client_args.ingestion.remote_store_url.is_none()
+            && args.client_args.ingestion.remote_store_s3.is_none()
+            && args.client_args.ingestion.remote_store_gcs.is_none()
+            && args.client_args.ingestion.remote_store_azure.is_none()
+            && args.client_args.ingestion.local_ingestion_path.is_none()
+            && args.client_args.ingestion.rpc_api_url.is_none()
+        {
+            bail!(
+                "checkpoint source required: set REMOTE_STORE_URL in .env or pass --remote-store-url"
+            );
+        }
+
         Ok(Self { framework: args })
     }
 }

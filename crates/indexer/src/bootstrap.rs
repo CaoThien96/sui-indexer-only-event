@@ -13,6 +13,9 @@ pub struct IndexerRuntime {
 }
 
 impl IndexerRuntime {
+    pub fn metrics_registry(&self) -> &Registry {
+        self.metrics.registry()
+    }
     pub async fn build(
         database_url: Url,
         kafka_brokers: &str,

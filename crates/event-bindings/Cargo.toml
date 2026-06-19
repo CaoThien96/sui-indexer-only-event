@@ -5,3 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+bcs = "0.1"
+move-binding-derive = { path = "vendor/move-binding/move-binding-derive" }
+move-types = { path = "vendor/move-binding/move-types" }
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true

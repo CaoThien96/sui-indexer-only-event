@@ -10,9 +10,14 @@ use config::{
 };
 use diesel_migrations::{EmbeddedMigrations, embed_migrations};
 use indexer_store::PostgresStore;
-use pipelines::stub_events::StubEventHandler;
+use pipelines::{
+    common::AppMetrics,
+    dex_pool::{self, DexPoolHandler},
+    dex_swap::{self, DexSwapHandler},
+    token_metadata::{self, TokenMetadataHandler},
+};
 use sui_indexer_alt_framework::{
-    pipeline::{CommitterConfig, Processor, sequential::SequentialConfig},
+    pipeline::{CommitterConfig, sequential::SequentialConfig},
     service::Error,
 };
 use tracing::info;
@@ -51,7 +56,6 @@ async fn main() -> Result<()> {
         info!(metrics_prefix = %prefix, "Using Prometheus metric name prefix");
     }
 
-    // Run migrations before indexer starts (watermarks schema only).
     let pg =
         PostgresStore::for_write(database_url.clone(), indexer_store::DbArgs::default()).await?;
     pg.run_migrations(MIGRATIONS).await?;
@@ -68,17 +72,44 @@ async fn main() -> Result<()> {
     .await?;
     info!("Indexer runtime initialized (CompositeStore + Prometheus)");
 
+    let app_metrics = AppMetrics::new(runtime.metrics_registry())?;
+
+    let dex_swap = DexSwapHandler::new(app_metrics.clone());
     runtime
         .indexer
-        .sequential_pipeline(StubEventHandler, sequential_config())
+        .sequential_pipeline(dex_swap.clone(), sequential_config())
         .await?;
     info!(
-        pipeline = StubEventHandler::NAME,
+        pipeline = dex_swap::NAME,
         collect_interval_ms = COLLECT_INTERVAL_MS,
-        "Stub events pipeline registered"
+        "DEX swap pipeline registered"
     );
 
-    log_key_builtin_metrics(&runtime.indexer, StubEventHandler::NAME);
+    let dex_pool = DexPoolHandler::new(app_metrics.clone());
+    runtime
+        .indexer
+        .sequential_pipeline(dex_pool.clone(), sequential_config())
+        .await?;
+    info!(
+        pipeline = dex_pool::NAME,
+        collect_interval_ms = COLLECT_INTERVAL_MS,
+        "DEX pool pipeline registered"
+    );
+
+    let token_metadata = TokenMetadataHandler::new(app_metrics);
+    runtime
+        .indexer
+        .sequential_pipeline(token_metadata.clone(), sequential_config())
+        .await?;
+    info!(
+        pipeline = token_metadata::NAME,
+        collect_interval_ms = COLLECT_INTERVAL_MS,
+        "Token metadata pipeline registered"
+    );
+
+    log_key_builtin_metrics(&runtime.indexer, dex_swap::NAME);
+    log_key_builtin_metrics(&runtime.indexer, dex_pool::NAME);
+    log_key_builtin_metrics(&runtime.indexer, token_metadata::NAME);
 
     match runtime.run().await {
         Ok(()) | Err(Error::Terminated) => {

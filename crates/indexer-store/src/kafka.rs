@@ -79,12 +79,19 @@ impl KafkaFactWriter {
             .register(Box::new(produce_errors.clone()))
             .context("failed to register kafka produce errors counter")?;
 
-        let producer: FutureProducer = ClientConfig::new()
+        let idempotence = std::env::var("KAFKA_ENABLE_IDEMPOTENCE")
+            .map(|v| v != "0" && v != "false" && v != "FALSE")
+            .unwrap_or(true);
+
+        let mut config = ClientConfig::new();
+        config
             .set("bootstrap.servers", brokers)
             .set("client.id", client_id)
             .set("acks", "all")
-            .set("enable.idempotence", "true")
-            .set("message.timeout.ms", "30000")
+            .set("enable.idempotence", idempotence.to_string())
+            .set("message.timeout.ms", "30000");
+
+        let producer: FutureProducer = config
             .create()
             .context("failed to create Kafka producer")?;
 

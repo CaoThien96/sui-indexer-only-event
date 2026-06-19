@@ -296,6 +296,11 @@ sequenceDiagram
 
 ```bash
 # .env.example
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=sui_indexer
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/sui_indexer
 KAFKA_BROKERS=localhost:9092
 KAFKA_CLIENT_ID=sui-token-indexer
