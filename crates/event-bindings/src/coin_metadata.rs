@@ -1,12 +1,23 @@
 //! Decode `0x2::coin::CoinMetadata<T>` objects from checkpoint object BCS.
+//!
+//! Regulated coins also create `0x2::coin::RegulatedCoinMetadata<T>` (links to CoinMetadata id);
+//! display fields live on `CoinMetadata` — index that type per Mysten GP indexer / GraphQL model.
 
 use anyhow::{Context, Result};
+use move_core_types::{
+    account_address::AccountAddress,
+    language_storage::StructTag,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::str::FromStr;
 
-const SUI_FRAMEWORK: &str = "0x2";
 const COIN_MODULE: &str = "coin";
 const COIN_METADATA_STRUCT: &str = "CoinMetadata";
+
+fn sui_framework_address() -> AccountAddress {
+    AccountAddress::from_hex_literal("0x2").expect("valid Sui framework address")
+}
 
 #[derive(Debug, Deserialize)]
 struct MoveUrl {
@@ -25,18 +36,27 @@ pub struct DecodedCoinMetadata {
 }
 
 /// Check struct tag matches `0x2::coin::CoinMetadata<T>`.
+pub fn is_coin_metadata_struct(tag: &StructTag) -> bool {
+    tag.address == sui_framework_address()
+        && tag.module.as_str() == COIN_MODULE
+        && tag.name.as_str() == COIN_METADATA_STRUCT
+        && tag.type_params.len() == 1
+}
+
+/// Check struct tag matches `0x2::coin::CoinMetadata<T>` from a canonical or short type string.
 pub fn is_coin_metadata_type(type_str: &str) -> bool {
-    let prefix = format!("{SUI_FRAMEWORK}::{COIN_MODULE}::{COIN_METADATA_STRUCT}<");
-    type_str.starts_with(&prefix) && type_str.ends_with('>')
+    StructTag::from_str(type_str)
+        .map(|tag| is_coin_metadata_struct(&tag))
+        .unwrap_or(false)
 }
 
 /// Extract coin type param from `0x2::coin::CoinMetadata<CoinType>`.
 pub fn extract_coin_type(type_str: &str) -> Option<String> {
-    let prefix = format!("{SUI_FRAMEWORK}::{COIN_MODULE}::{COIN_METADATA_STRUCT}<");
-    type_str
-        .strip_prefix(&prefix)
-        .and_then(|s| s.strip_suffix('>'))
-        .map(str::to_string)
+    let tag = StructTag::from_str(type_str).ok()?;
+    if !is_coin_metadata_struct(&tag) {
+        return None;
+    }
+    tag.type_params.first().map(|param| param.to_string())
 }
 
 fn format_id(bytes: [u8; 32]) -> String {
@@ -44,9 +64,7 @@ fn format_id(bytes: [u8; 32]) -> String {
 }
 
 /// Decode object BCS contents for a `CoinMetadata` object.
-pub fn decode_coin_metadata_object(type_str: &str, bcs: &[u8]) -> Result<DecodedCoinMetadata> {
-    let coin_type = extract_coin_type(type_str)
-        .with_context(|| format!("not a CoinMetadata type: {type_str}"))?;
+pub fn decode_coin_metadata_object(coin_type: &str, bcs: &[u8]) -> Result<DecodedCoinMetadata> {
 
     #[derive(Debug, Deserialize)]
     struct CoinMetadataBody {
@@ -62,7 +80,7 @@ pub fn decode_coin_metadata_object(type_str: &str, bcs: &[u8]) -> Result<Decoded
         .with_context(|| format!("failed to BCS decode CoinMetadata for {coin_type}"))?;
 
     Ok(DecodedCoinMetadata {
-        coin_type,
+        coin_type: coin_type.to_string(),
         name: decoded.name,
         symbol: decoded.symbol,
         decimals: decoded.decimals,
@@ -104,11 +122,15 @@ mod tests {
     }
 
     #[test]
+    fn recognizes_coin_metadata_canonical_type_string() {
+        let canonical = "0x0000000000000000000000000000000000000000000000000000000000000002::coin::CoinMetadata<0x6dae8ca14311574fdfe555524ea48558e3d1360d1607d1c7f98af867e3b7976c::flx::FLX>";
+        assert!(is_coin_metadata_type(canonical));
+    }
+
+    #[test]
     fn decodes_flx_coin_metadata_from_mainnet_bcs() {
-        let decoded = decode_coin_metadata_object(
-            FLX_COIN_METADATA_TYPE,
-            &hex_to_bytes(FLX_COIN_METADATA_BCS),
-        )
+        let coin_type = "0x6dae8ca14311574fdfe555524ea48558e3d1360d1607d1c7f98af867e3b7976c::flx::FLX";
+        let decoded = decode_coin_metadata_object(coin_type, &hex_to_bytes(FLX_COIN_METADATA_BCS))
         .unwrap();
         assert_eq!(decoded.name, "FlowX");
         assert_eq!(decoded.symbol, "FLX");

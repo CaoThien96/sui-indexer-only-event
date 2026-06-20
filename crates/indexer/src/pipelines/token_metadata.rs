@@ -1,6 +1,7 @@
 use anyhow::Result;
 use event_bindings::coin_metadata::{self, DecodedCoinMetadata};
 use indexer_store::{CompositeStore, FactTopic, MessageEnvelope};
+use std::collections::HashSet;
 use std::sync::Arc;
 use sui_indexer_alt_framework::{
     pipeline::Processor, pipeline::sequential::Handler, store::Store,
@@ -9,6 +10,9 @@ use sui_indexer_alt_framework::{
 use sui_indexer_alt_framework::types::transaction::TransactionDataAPI;
 use tracing::info;
 
+use sui_indexer_alt_framework::types::SUI_FRAMEWORK_ADDRESS;
+
+use super::checkpoint_objects::{checkpoint_input_objects, checkpoint_output_objects};
 use super::common::{AppMetrics, RawTokenMetadataFact, build_token_metadata_envelope, token_metadata_partition_key};
 
 pub const NAME: &str = "token_metadata";
@@ -41,24 +45,54 @@ impl Processor for TokenMetadataHandler {
     async fn process(&self, checkpoint: &Arc<Checkpoint>) -> Result<Vec<Self::Value>> {
         let checkpoint_seq = checkpoint.summary.sequence_number;
         let timestamp_ms = checkpoint.summary.timestamp_ms;
+        let checkpoint_inputs = checkpoint_input_objects(checkpoint)?;
+        let checkpoint_outputs = checkpoint_output_objects(checkpoint)?;
+
         let mut rows = Vec::new();
         let mut matched = 0usize;
 
+        // Per-tx attribution for tx_digest / creator; use output_objects (official pattern).
         for (tx_idx, tx) in checkpoint.transactions.iter().enumerate() {
             let tx_digest = tx.transaction.digest().to_string();
             let creator = tx.transaction.sender().to_string();
+            let tx_input_ids: HashSet<_> = tx
+                .input_objects(&checkpoint.object_set)
+                .map(|obj| obj.id())
+                .collect();
 
-            for obj in tx.created_objects(&checkpoint.object_set) {
-                let Some(move_obj) = obj.data.try_as_move() else {
+            for obj in tx.output_objects(&checkpoint.object_set) {
+                let object_id = obj.id();
+
+                // Skip mutations — catalog new CoinMetadata creations at checkpoint boundary.
+                if checkpoint_inputs.contains_key(&object_id) {
                     continue;
-                };
-                let type_str = move_obj.type_().to_canonical_string(true);
-                if !coin_metadata::is_coin_metadata_type(&type_str) {
+                }
+                if !checkpoint_outputs.contains_key(&object_id) {
+                    continue;
+                }
+                if tx_input_ids.contains(&object_id) {
                     continue;
                 }
 
+                let Some(move_obj) = obj.data.try_as_move() else {
+                    continue;
+                };
+                let move_type = move_obj.type_();
+                if move_type.address() != SUI_FRAMEWORK_ADDRESS
+                    || move_type.module().as_str() != "coin"
+                    || move_type.name().as_str() != "CoinMetadata"
+                {
+                    continue;
+                }
+
+                let Some(coin_type_param) = move_type.type_params().into_iter().next() else {
+                    continue;
+                };
+                let coin_type = coin_type_param.to_string();
+                let type_str = move_type.to_canonical_string(true);
+
                 matched += 1;
-                match coin_metadata::decode_coin_metadata_object(&type_str, move_obj.contents()) {
+                match coin_metadata::decode_coin_metadata_object(&coin_type, move_obj.contents()) {
                     Ok(decoded) => {
                         self.metrics
                             .objects_matched

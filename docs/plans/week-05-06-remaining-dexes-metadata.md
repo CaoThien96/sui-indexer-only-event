@@ -48,11 +48,23 @@ Expected event types:
 
 ## 5. Verify Kafka — token metadata
 
+Indexer uses `tx.output_objects(&checkpoint.object_set)` (Walrus / GP indexer pattern), not `created_objects`.
+
 ```bash
+bash infra/kafka/create-topics.sh   # ensures token.metadata.raw.v1 exists
+
 /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 \
   --topic token.metadata.raw.v1 \
   --from-beginning --max-messages 5
+```
+
+**Backfill after fixing pipeline:** reset `token_metadata` watermark in Postgres, restart indexer from desired `FIRST_CHECKPOINT`.
+
+```sql
+UPDATE watermarks
+SET checkpoint_hi_inclusive = 288851000, reader_lo = 288851000
+WHERE pipeline = 'token_metadata';
 ```
 
 Payload fields: `coin_type`, `name`, `symbol`, `decimals`, `creator`, `checkpoint_sequence_number`, `tx_digest`.

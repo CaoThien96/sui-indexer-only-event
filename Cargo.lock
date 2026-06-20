@@ -2116,6 +2116,7 @@ dependencies = [
  "bcs",
  "hex",
  "move-binding-derive",
+ "move-core-types 0.0.4 (git+https://github.com/MystenLabs/sui.git?rev=d10b7db79a6634acbc483ad8633a7d27fe3bc7c8)",
  "move-types",
  "serde",
  "serde_json",

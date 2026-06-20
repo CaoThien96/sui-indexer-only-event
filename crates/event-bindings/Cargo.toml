@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 bcs = "0.1"
+move-core-types = { git = "https://github.com/MystenLabs/sui.git", rev = "d10b7db79a6634acbc483ad8633a7d27fe3bc7c8" }
 move-binding-derive = { path = "vendor/move-binding/move-binding-derive" }
 move-types = { path = "vendor/move-binding/move-types" }
 serde.workspace = true
