@@ -12,3 +12,9 @@ scrape_configs:
   - job_name: sui-processors
     static_configs:
       - targets: ["host.docker.internal:9185"]
+  - job_name: sui-volume-engine
+    static_configs:
+      - targets: ["host.docker.internal:9186"]
+  - job_name: sui-ohlc-aggregator
+    static_configs:
+      - targets: ["host.docker.internal:9187"]

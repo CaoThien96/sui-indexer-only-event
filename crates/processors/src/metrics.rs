@@ -70,3 +70,82 @@ impl ProcessorMetrics {
         }))
     }
 }
+
+#[derive(Clone)]
+pub struct MetricsBundle {
+    pub swaps_fact_inserted: IntCounter,
+    pub pool_liquidity_inserted: IntCounter,
+    pub redis_writes: IntCounterVec,
+    pub volume_skipped: IntCounterVec,
+    pub ohlc_skipped: IntCounterVec,
+    pub ohlc_buckets_updated: IntCounterVec,
+    pub decode_errors: IntCounterVec,
+}
+
+impl MetricsBundle {
+    pub fn new(registry: &Registry, worker: &str) -> anyhow::Result<Arc<Self>> {
+        let swaps_fact_inserted = IntCounter::new(
+            "processor_swaps_fact_inserted_total",
+            "Rows inserted into swaps_fact",
+        )?;
+        let pool_liquidity_inserted = IntCounter::new(
+            "processor_pool_liquidity_inserted_total",
+            "Rows inserted into pool_liquidity",
+        )?;
+        let redis_writes = IntCounterVec::new(
+            prometheus::Opts::new(
+                "processor_redis_writes_total",
+                "Redis cache key writes",
+            ),
+            &["key_type"],
+        )?;
+        let volume_skipped = IntCounterVec::new(
+            prometheus::Opts::new(
+                "processor_volume_skipped_total",
+                "Swaps skipped by volume-engine",
+            ),
+            &["reason"],
+        )?;
+        let ohlc_skipped = IntCounterVec::new(
+            prometheus::Opts::new(
+                "processor_ohlc_skipped_total",
+                "Swaps skipped by ohlc-aggregator",
+            ),
+            &["reason"],
+        )?;
+        let ohlc_buckets_updated = IntCounterVec::new(
+            prometheus::Opts::new(
+                "processor_ohlc_buckets_updated_total",
+                "OHLC 1m buckets upserted",
+            ),
+            &["protocol"],
+        )?;
+        let decode_errors = IntCounterVec::new(
+            prometheus::Opts::new(
+                "processor_decode_errors_total",
+                "Kafka payload decode/handler errors",
+            ),
+            &["worker", "topic"],
+        )?;
+
+        registry.register(Box::new(swaps_fact_inserted.clone()))?;
+        registry.register(Box::new(pool_liquidity_inserted.clone()))?;
+        registry.register(Box::new(redis_writes.clone()))?;
+        registry.register(Box::new(volume_skipped.clone()))?;
+        registry.register(Box::new(ohlc_skipped.clone()))?;
+        registry.register(Box::new(ohlc_buckets_updated.clone()))?;
+        registry.register(Box::new(decode_errors.clone()))?;
+
+        let _ = worker;
+
+        Ok(Arc::new(Self {
+            swaps_fact_inserted,
+            pool_liquidity_inserted,
+            redis_writes,
+            volume_skipped,
+            ohlc_skipped,
+            ohlc_buckets_updated,
+            decode_errors,
+        }))
+    }
+}

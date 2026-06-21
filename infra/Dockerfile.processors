@@ -1,4 +1,4 @@
-# Build catalog-worker + swap-normalizer from workspace root.
+# Build processor binaries from workspace root.
 FROM rust:1.95-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,7 +12,11 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 
-RUN cargo build --release -p sui-processors --bin catalog-worker --bin swap-normalizer
+RUN cargo build --release -p sui-processors \
+    --bin catalog-worker \
+    --bin swap-normalizer \
+    --bin volume-engine \
+    --bin ohlc-aggregator
 
 FROM debian:bookworm-slim
 
@@ -23,3 +27,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /app/target/release/catalog-worker /usr/local/bin/catalog-worker
 COPY --from=builder /app/target/release/swap-normalizer /usr/local/bin/swap-normalizer
+COPY --from=builder /app/target/release/volume-engine /usr/local/bin/volume-engine
+COPY --from=builder /app/target/release/ohlc-aggregator /usr/local/bin/ohlc-aggregator

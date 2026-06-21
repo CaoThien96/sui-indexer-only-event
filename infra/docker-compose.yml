@@ -110,3 +110,74 @@ services:
         condition: service_started
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: ${TIMESCALE_USER:-postgres}
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD:-postgres}
+      POSTGRES_DB: ${TIMESCALE_DB:-sui_metrics}
+    ports:
+      - "${TIMESCALE_PORT:-5433}:5432"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${TIMESCALE_USER:-postgres} -d ${TIMESCALE_DB:-sui_metrics}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  volume-engine:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.processors
+    env_file:
+      - ../.env
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      TIMESCALE_URL: postgres://${TIMESCALE_USER:-postgres}:${TIMESCALE_PASSWORD:-postgres}@timescaledb:5432/${TIMESCALE_DB:-sui_metrics}
+      REDIS_URL: redis://redis:6379
+    command: ["volume-engine"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      swap-normalizer:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  ohlc-aggregator:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.processors
+    env_file:
+      - ../.env
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      TIMESCALE_URL: postgres://${TIMESCALE_USER:-postgres}:${TIMESCALE_PASSWORD:-postgres}@timescaledb:5432/${TIMESCALE_DB:-sui_metrics}
+    command: ["ohlc-aggregator"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      swap-normalizer:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
