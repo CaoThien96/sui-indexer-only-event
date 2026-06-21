@@ -102,7 +102,7 @@ gantt
 
 | Sprint | Focus |
 |--------|-------|
-| Week 8–9 | `crates/processors`: normalizer + catalog → Postgres |
+| Week 8–9 | [`crates/processors`](docs/plans/week-08-09-processors.md): normalizer + catalog → Postgres |
 | Week 10–12 | OHLC + volume → TimescaleDB + Redis |
 | Week 13–15 | `crates/api-service` REST + ClickHouse roll-off |
 

@@ -9,3 +9,6 @@ scrape_configs:
   - job_name: sui-token-indexer
     static_configs:
       - targets: ["host.docker.internal:9184"]
+  - job_name: sui-processors
+    static_configs:
+      - targets: ["host.docker.internal:9185"]

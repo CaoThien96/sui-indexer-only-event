@@ -72,3 +72,41 @@ services:
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  catalog-worker:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.processors
+    env_file:
+      - ../.env
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-sui_indexer}
+    command: ["catalog-worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  swap-normalizer:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.processors
+    env_file:
+      - ../.env
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-sui_indexer}
+    command: ["swap-normalizer"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      catalog-worker:
+        condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

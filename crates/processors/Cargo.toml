@@ -1,0 +1,40 @@
+[package]
+name = "sui-processors"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "catalog-worker"
+path = "src/bin/catalog-worker.rs"
+
+[[bin]]
+name = "swap-normalizer"
+path = "src/bin/swap-normalizer.rs"
+
+[dependencies]
+indexer-store = { path = "../indexer-store" }
+event-bindings = { path = "../event-bindings" }
+tokio.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+dotenvy.workspace = true
+prometheus.workspace = true
+url.workspace = true
+diesel.workspace = true
+diesel-async.workspace = true
+diesel_migrations.workspace = true
+chrono.workspace = true
+scoped-futures.workspace = true
+rdkafka.workspace = true
+rust_decimal.workspace = true
+lru.workspace = true
+rustls.workspace = true
+hex.workspace = true
+move-core-types = { git = "https://github.com/MystenLabs/sui.git", rev = "d10b7db79a6634acbc483ad8633a7d27fe3bc7c8" }
+http = "1"

@@ -4,8 +4,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use prometheus::{IntCounter, Registry};
 use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::message::BorrowedMessage;
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use serde::Serialize;
+use rdkafka::{Message, Offset, TopicPartitionList};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tracing::debug;
@@ -16,6 +19,7 @@ pub enum FactTopic {
     SwapRaw,
     PoolRaw,
     TokenMetadataRaw,
+    SwapNormalized,
 }
 
 impl FactTopic {
@@ -24,12 +28,13 @@ impl FactTopic {
             Self::SwapRaw => "dex.swap.raw.v1",
             Self::PoolRaw => "dex.pool.raw.v1",
             Self::TokenMetadataRaw => "token.metadata.raw.v1",
+            Self::SwapNormalized => "dex.swap.normalized.v1",
         }
     }
 }
 
 /// Message envelope per docs/04-data-contracts.md §1.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageEnvelope {
     pub schema_version: u32,
     pub message_id: String,
@@ -145,4 +150,77 @@ impl KafkaFactWriter {
 
         Ok(published)
     }
+}
+
+/// Kafka consumer for processor workers (Phase 2).
+#[derive(Clone)]
+pub struct KafkaFactReader {
+    consumer: Arc<StreamConsumer>,
+    group_id: String,
+}
+
+impl KafkaFactReader {
+    pub fn new(brokers: &str, group_id: &str, client_id: &str) -> Result<Self> {
+        let auto_offset_reset = std::env::var("KAFKA_AUTO_OFFSET_RESET")
+            .unwrap_or_else(|_| "earliest".to_string());
+
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("bootstrap.servers", brokers)
+            .set("group.id", group_id)
+            .set("client.id", client_id)
+            .set("enable.auto.commit", "false")
+            .set("auto.offset.reset", &auto_offset_reset)
+            .set("session.timeout.ms", "30000")
+            .create()
+            .context("failed to create Kafka consumer")?;
+
+        Ok(Self {
+            consumer: Arc::new(consumer),
+            group_id: group_id.to_string(),
+        })
+    }
+
+    pub fn subscribe(&self, topics: &[FactTopic]) -> Result<()> {
+        let names: Vec<&str> = topics.iter().map(|t| t.as_str()).collect();
+        self.consumer
+            .subscribe(&names)
+            .context("failed to subscribe to Kafka topics")
+    }
+
+    pub async fn recv_envelope(&self) -> Result<(MessageEnvelope, BorrowedMessage<'_>)> {
+        let message = self
+            .consumer
+            .recv()
+            .await
+            .context("Kafka consumer recv failed")?;
+        let envelope = parse_envelope(&message)?;
+        Ok((envelope, message))
+    }
+
+    pub fn commit_message(&self, message: &BorrowedMessage<'_>) -> Result<()> {
+        let mut tpl = TopicPartitionList::new();
+        tpl.add_partition_offset(
+            message.topic(),
+            message.partition(),
+            Offset::Offset(message.offset() + 1),
+        )
+        .context("failed to build commit offset")?;
+        self.consumer
+            .commit(&tpl, rdkafka::consumer::CommitMode::Async)
+            .context("failed to commit Kafka offset")
+    }
+
+    pub fn group_id(&self) -> &str {
+        &self.group_id
+    }
+}
+
+/// Deserialize a Kafka message payload into a `MessageEnvelope`.
+pub fn parse_envelope(message: &BorrowedMessage<'_>) -> Result<MessageEnvelope> {
+    let payload = message
+        .payload()
+        .context("Kafka message has no payload")?;
+    let raw: MessageEnvelope =
+        serde_json::from_slice(payload).context("failed to deserialize MessageEnvelope")?;
+    Ok(raw)
 }

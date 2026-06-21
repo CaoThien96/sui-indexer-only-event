@@ -9,6 +9,7 @@ TOPICS=(
   "dex.swap.raw.v1"
   "dex.pool.raw.v1"
   "token.metadata.raw.v1"
+  "dex.swap.normalized.v1"
 )
 
 COMPOSE_FILE="$(dirname "$0")/../docker-compose.yml"

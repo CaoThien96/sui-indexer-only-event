@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS token_watchlist;
+DROP TABLE IF EXISTS pools;
+DROP TABLE IF EXISTS tokens;
+DROP TABLE IF EXISTS protocols;

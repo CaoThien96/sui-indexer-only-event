@@ -1,0 +1,25 @@
+# Build catalog-worker + swap-normalizer from workspace root.
+FROM rust:1.95-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake \
+    libssl-dev \
+    pkg-config \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+
+RUN cargo build --release -p sui-processors --bin catalog-worker --bin swap-normalizer
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/catalog-worker /usr/local/bin/catalog-worker
+COPY --from=builder /app/target/release/swap-normalizer /usr/local/bin/swap-normalizer

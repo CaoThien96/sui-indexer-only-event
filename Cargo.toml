@@ -4,6 +4,7 @@ members = [
     "crates/indexer",
     "crates/indexer-store",
     "crates/event-bindings",
+    "crates/processors",
     "examples/rpc-service",
     "tools/reconciliation",
 ]
@@ -38,6 +39,8 @@ scoped-futures = "0.1"
 sha2 = "0.10"
 hex = "0.4"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+lru = "0.12"
 
 [patch."https://github.com/MystenLabs/move-binding"]
 move-binding = { path = "crates/event-bindings/vendor/move-binding/move-binding" }
