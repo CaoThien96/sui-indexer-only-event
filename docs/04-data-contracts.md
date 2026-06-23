@@ -295,7 +295,48 @@ SELECT create_hypertable('pool_liquidity', 'time');
 
 ## 9. ClickHouse tables (cold)
 
-Mirror `swaps_fact`, `ohlc_1m`, and (Phase 5) `transfer_edges`:
+Mirror `swaps_fact`, `ohlc_1m`, and (Phase 5) `transfer_edges`.
+
+### `swaps_fact`
+
+```sql
+CREATE TABLE swaps_fact (
+  time DateTime64(3),
+  tx_digest String,
+  event_seq Int32,
+  protocol String,
+  pool_id String,
+  base_coin_type String,
+  quote_coin_type String,
+  amount_base String,
+  amount_quote String,
+  price_quote_per_base String,
+  fee_amount Nullable(String),
+  sender Nullable(String),
+  checkpoint_seq Int64
+) ENGINE = ReplacingMergeTree()
+ORDER BY (base_coin_type, time, tx_digest, event_seq, protocol);
+```
+
+### `ohlc_1m`
+
+```sql
+CREATE TABLE ohlc_1m (
+  bucket DateTime64(3),
+  pool_id String,
+  base_coin_type String,
+  quote_coin_type String,
+  open String,
+  high String,
+  low String,
+  close String,
+  volume_quote String,
+  trade_count Int32
+) ENGINE = ReplacingMergeTree()
+ORDER BY (base_coin_type, pool_id, bucket);
+```
+
+### `transfer_edges` (Phase 5)
 
 ```sql
 CREATE TABLE transfer_edges (
@@ -344,3 +385,65 @@ ORDER BY (coin_type, ts, tx_digest);
 ```
 
 `holder_count` populated in Phase 4.
+
+### `GET /v1/tokens/{coin_type}/pools`
+
+```json
+{
+  "coin_type": "0x...::coin::TOKEN",
+  "pools": [
+    {
+      "pool_id": "0x...",
+      "protocol": "cetus",
+      "coin_type_a": "0x2::sui::SUI",
+      "coin_type_b": "0x...::coin::TOKEN",
+      "tvl_quote": "125000.5"
+    }
+  ]
+}
+```
+
+### `GET /v1/pools/{pool_id}/ohlc`
+
+Query: `interval` = `1m|5m|1h|4h|24h`, `from`, `to` (ISO-8601), optional `base_coin_type`.
+
+```json
+{
+  "pool_id": "0x...",
+  "interval": "1h",
+  "bars": [
+    {
+      "bucket": "2026-06-21T10:00:00Z",
+      "open": "1.0",
+      "high": "1.2",
+      "low": "0.9",
+      "close": "1.1",
+      "volume_quote": "50000",
+      "trade_count": 42
+    }
+  ]
+}
+```
+
+### `GET /v1/tokens/{coin_type}/swaps`
+
+Query: `pool_id?`, `limit` (default 50, max 200), `cursor?` (opaque; last `time` + `tx_digest`).
+
+```json
+{
+  "coin_type": "0x...::coin::TOKEN",
+  "swaps": [
+    {
+      "time": "2026-06-21T10:15:00Z",
+      "tx_digest": "ABC...",
+      "event_seq": 0,
+      "protocol": "cetus",
+      "pool_id": "0x...",
+      "amount_base": "100",
+      "amount_quote": "0.5",
+      "price_quote_per_base": "0.005"
+    }
+  ],
+  "next_cursor": null
+}
+```

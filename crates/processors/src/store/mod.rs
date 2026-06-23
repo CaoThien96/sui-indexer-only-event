@@ -250,6 +250,93 @@ impl CatalogStore {
             .optional()
             .map_err(Into::into)
     }
+
+    pub async fn get_token(&self, coin_type: &str) -> anyhow::Result<Option<TokenRow>> {
+        let coin_type = coin_type::normalize(coin_type);
+        let mut conn = self.get_connection().await?;
+        let row = tokens::table
+            .filter(tokens::coin_type.eq(&coin_type))
+            .select((
+                tokens::coin_type,
+                tokens::name,
+                tokens::symbol,
+                tokens::decimals,
+                tokens::image_url,
+            ))
+            .first::<(String, Option<String>, Option<String>, i16, Option<String>)>(&mut conn)
+            .await
+            .optional()?;
+
+        Ok(row.map(
+            |(coin_type, name, symbol, decimals, image_url)| TokenRow {
+                coin_type,
+                name,
+                symbol,
+                decimals,
+                image_url,
+            },
+        ))
+    }
+
+    pub async fn count_pools_for_token(&self, coin_type: &str) -> anyhow::Result<i64> {
+        let variants = coin_type::pool_lookup_variants(coin_type);
+        let mut conn = self.get_connection().await?;
+        let count = pools::table
+            .filter(
+                pools::coin_type_a
+                    .eq_any(&variants)
+                    .or(pools::coin_type_b.eq_any(&variants)),
+            )
+            .filter(pools::is_active.eq(true))
+            .count()
+            .get_result::<i64>(&mut conn)
+            .await?;
+        Ok(count)
+    }
+
+    pub async fn list_pools_for_token(
+        &self,
+        coin_type: &str,
+        limit: i64,
+    ) -> anyhow::Result<Vec<PoolRow>> {
+        let variants = coin_type::pool_lookup_variants(coin_type);
+        let mut conn = self.get_connection().await?;
+        let rows = pools::table
+            .filter(
+                pools::coin_type_a
+                    .eq_any(&variants)
+                    .or(pools::coin_type_b.eq_any(&variants)),
+            )
+            .filter(pools::is_active.eq(true))
+            .select((
+                pools::pool_id,
+                pools::protocol,
+                pools::coin_type_a,
+                pools::coin_type_b,
+            ))
+            .limit(limit)
+            .load::<(String, String, String, String)>(&mut conn)
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(pool_id, protocol, coin_type_a, coin_type_b)| PoolRow {
+                pool_id,
+                protocol,
+                coin_type_a,
+                coin_type_b,
+            })
+            .collect())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenRow {
+    pub coin_type: String,
+    pub name: Option<String>,
+    pub symbol: Option<String>,
+    pub decimals: i16,
+    pub image_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]

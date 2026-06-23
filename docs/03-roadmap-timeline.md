@@ -104,7 +104,7 @@ gantt
 |--------|-------|
 | Week 8–9 | [`crates/processors`](docs/plans/week-08-09-processors.md): normalizer + catalog → Postgres |
 | Week 10–12 | [`OHLC + volume → TimescaleDB + Redis`](docs/plans/week-10-12-ohlc-volume.md) |
-| Week 13–15 | `crates/api-service` REST + ClickHouse roll-off |
+| Week 13–15 | [`api-service` REST + ClickHouse roll-off](docs/plans/week-13-15-api-clickhouse.md) |
 
 **MVP gate:** Token detail with volume, price, pools, OHLC chart, swap history.
 

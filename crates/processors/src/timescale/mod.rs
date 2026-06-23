@@ -4,6 +4,7 @@ use std::time::Duration;
 use diesel_async::pooled_connection::bb8::{Pool, PooledConnection};
 use diesel_async::pooled_connection::{AsyncDieselConnectionManager, ManagerConfig};
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use diesel::OptionalExtension;
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use diesel_async::async_connection_wrapper::AsyncConnectionWrapper;
 use rust_decimal::Decimal;
@@ -187,4 +188,449 @@ impl TimescaleStore {
         let volume = row.volume.parse().unwrap_or(Decimal::ZERO);
         Ok((volume, row.tx_count))
     }
+
+    pub async fn latest_price_for_token(
+        &self,
+        base_coin_type: &str,
+    ) -> anyhow::Result<Option<(String, String)>> {
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            price: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            quote_coin_type: String,
+        }
+
+        let mut conn = self.get_connection().await?;
+        let row: Option<Row> = diesel::sql_query(
+            "SELECT price_quote_per_base::text AS price, quote_coin_type
+             FROM swaps_fact
+             WHERE base_coin_type = $1
+             ORDER BY time DESC
+             LIMIT 1",
+        )
+        .bind::<diesel::sql_types::Text, _>(base_coin_type)
+        .get_result(&mut conn)
+        .await
+        .optional()?;
+
+        Ok(row.map(|r| (r.price, r.quote_coin_type)))
+    }
+
+    pub async fn list_swaps(
+        &self,
+        base_coin_type: &str,
+        pool_id: Option<&str>,
+        limit: i64,
+        before_time: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> anyhow::Result<Vec<SwapRow>> {
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+            time: chrono::DateTime<chrono::Utc>,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            tx_digest: String,
+            #[diesel(sql_type = diesel::sql_types::Int4)]
+            event_seq: i32,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            protocol: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            pool_id: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            amount_base: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            amount_quote: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            price_quote_per_base: String,
+        }
+
+        let mut conn = self.get_connection().await?;
+        let rows: Vec<Row> = if let Some(pool_id) = pool_id {
+            if let Some(t) = before_time {
+                diesel::sql_query(
+                    "SELECT time, tx_digest, event_seq, protocol, pool_id,
+                            amount_base::text, amount_quote::text, price_quote_per_base::text
+                     FROM swaps_fact
+                     WHERE base_coin_type = $1 AND pool_id = $2 AND time < $3
+                     ORDER BY time DESC
+                     LIMIT $4",
+                )
+                .bind::<diesel::sql_types::Text, _>(base_coin_type)
+                .bind::<diesel::sql_types::Text, _>(pool_id)
+                .bind::<diesel::sql_types::Timestamptz, _>(t)
+                .bind::<diesel::sql_types::Int8, _>(limit)
+                .load(&mut conn)
+                .await?
+            } else {
+                diesel::sql_query(
+                    "SELECT time, tx_digest, event_seq, protocol, pool_id,
+                            amount_base::text, amount_quote::text, price_quote_per_base::text
+                     FROM swaps_fact
+                     WHERE base_coin_type = $1 AND pool_id = $2
+                     ORDER BY time DESC
+                     LIMIT $3",
+                )
+                .bind::<diesel::sql_types::Text, _>(base_coin_type)
+                .bind::<diesel::sql_types::Text, _>(pool_id)
+                .bind::<diesel::sql_types::Int8, _>(limit)
+                .load(&mut conn)
+                .await?
+            }
+        } else if let Some(t) = before_time {
+            diesel::sql_query(
+                "SELECT time, tx_digest, event_seq, protocol, pool_id,
+                        amount_base::text, amount_quote::text, price_quote_per_base::text
+                 FROM swaps_fact
+                 WHERE base_coin_type = $1 AND time < $2
+                 ORDER BY time DESC
+                 LIMIT $3",
+            )
+            .bind::<diesel::sql_types::Text, _>(base_coin_type)
+            .bind::<diesel::sql_types::Timestamptz, _>(t)
+            .bind::<diesel::sql_types::Int8, _>(limit)
+            .load(&mut conn)
+            .await?
+        } else {
+            diesel::sql_query(
+                "SELECT time, tx_digest, event_seq, protocol, pool_id,
+                        amount_base::text, amount_quote::text, price_quote_per_base::text
+                 FROM swaps_fact
+                 WHERE base_coin_type = $1
+                 ORDER BY time DESC
+                 LIMIT $2",
+            )
+            .bind::<diesel::sql_types::Text, _>(base_coin_type)
+            .bind::<diesel::sql_types::Int8, _>(limit)
+            .load(&mut conn)
+            .await?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|r| SwapRow {
+                time: r.time,
+                tx_digest: r.tx_digest,
+                event_seq: r.event_seq,
+                protocol: r.protocol,
+                pool_id: r.pool_id,
+                amount_base: r.amount_base,
+                amount_quote: r.amount_quote,
+                price_quote_per_base: r.price_quote_per_base,
+            })
+            .collect())
+    }
+
+    pub async fn query_ohlc(
+        &self,
+        pool_id: &str,
+        interval: &str,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+        base_coin_type: Option<&str>,
+    ) -> anyhow::Result<Vec<OhlcQueryRow>> {
+        let table = match interval {
+            "1m" => "ohlc_1m",
+            "5m" => "ohlc_5m",
+            "1h" => "ohlc_1h",
+            "4h" => "ohlc_4h",
+            "24h" => "ohlc_24h",
+            _ => return Err(anyhow::anyhow!("invalid interval: {interval}")),
+        };
+
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+            bucket: chrono::DateTime<chrono::Utc>,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            open: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            high: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            low: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            close: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            volume_quote: String,
+            #[diesel(sql_type = diesel::sql_types::Int4)]
+            trade_count: i32,
+        }
+
+        let mut conn = self.get_connection().await?;
+        let rows: Vec<Row> = if let Some(base) = base_coin_type {
+            let sql = format!(
+                "SELECT bucket, open::text, high::text, low::text, close::text,
+                        volume_quote::text, trade_count
+                 FROM {table}
+                 WHERE pool_id = $1 AND base_coin_type = $2
+                   AND bucket >= $3 AND bucket <= $4
+                 ORDER BY bucket ASC"
+            );
+            diesel::sql_query(&sql)
+                .bind::<diesel::sql_types::Text, _>(pool_id)
+                .bind::<diesel::sql_types::Text, _>(base)
+                .bind::<diesel::sql_types::Timestamptz, _>(from)
+                .bind::<diesel::sql_types::Timestamptz, _>(to)
+                .load(&mut conn)
+                .await?
+        } else {
+            let sql = format!(
+                "SELECT bucket, open::text, high::text, low::text, close::text,
+                        volume_quote::text, trade_count
+                 FROM {table}
+                 WHERE pool_id = $1 AND bucket >= $2 AND bucket <= $3
+                 ORDER BY bucket ASC"
+            );
+            diesel::sql_query(&sql)
+                .bind::<diesel::sql_types::Text, _>(pool_id)
+                .bind::<diesel::sql_types::Timestamptz, _>(from)
+                .bind::<diesel::sql_types::Timestamptz, _>(to)
+                .load(&mut conn)
+                .await?
+        };
+
+        Ok(rows
+            .into_iter()
+            .map(|r| OhlcQueryRow {
+                bucket: r.bucket,
+                open: r.open,
+                high: r.high,
+                low: r.low,
+                close: r.close,
+                volume_quote: r.volume_quote,
+                trade_count: r.trade_count,
+            })
+            .collect())
+    }
+
+    pub async fn fetch_swaps_for_rolloff(
+        &self,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<RolloffSwapRow>> {
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+            time: chrono::DateTime<chrono::Utc>,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            tx_digest: String,
+            #[diesel(sql_type = diesel::sql_types::Int4)]
+            event_seq: i32,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            protocol: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            pool_id: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            base_coin_type: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            quote_coin_type: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            amount_base: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            amount_quote: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            price_quote_per_base: String,
+            #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+            fee_amount: Option<String>,
+            #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+            sender: Option<String>,
+            #[diesel(sql_type = diesel::sql_types::Int8)]
+            checkpoint_seq: i64,
+        }
+
+        let mut conn = self.get_connection().await?;
+        let rows: Vec<Row> = diesel::sql_query(
+            "SELECT time, tx_digest, event_seq, protocol, pool_id,
+                    base_coin_type, quote_coin_type,
+                    amount_base::text, amount_quote::text, price_quote_per_base::text,
+                    fee_amount::text, sender, checkpoint_seq
+             FROM swaps_fact
+             WHERE time >= $1 AND time < $2
+             ORDER BY time ASC
+             LIMIT $3",
+        )
+        .bind::<diesel::sql_types::Timestamptz, _>(from)
+        .bind::<diesel::sql_types::Timestamptz, _>(to)
+        .bind::<diesel::sql_types::Int8, _>(limit)
+        .load(&mut conn)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| RolloffSwapRow {
+                time: r.time,
+                tx_digest: r.tx_digest,
+                event_seq: r.event_seq,
+                protocol: r.protocol,
+                pool_id: r.pool_id,
+                base_coin_type: r.base_coin_type,
+                quote_coin_type: r.quote_coin_type,
+                amount_base: r.amount_base,
+                amount_quote: r.amount_quote,
+                price_quote_per_base: r.price_quote_per_base,
+                fee_amount: r.fee_amount,
+                sender: r.sender,
+                checkpoint_seq: r.checkpoint_seq,
+            })
+            .collect())
+    }
+
+    pub async fn fetch_ohlc_for_rolloff(
+        &self,
+        from: chrono::DateTime<chrono::Utc>,
+        to: chrono::DateTime<chrono::Utc>,
+        limit: i64,
+    ) -> anyhow::Result<Vec<RolloffOhlcRow>> {
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+            bucket: chrono::DateTime<chrono::Utc>,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            pool_id: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            base_coin_type: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            quote_coin_type: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            open: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            high: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            low: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            close: String,
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            volume_quote: String,
+            #[diesel(sql_type = diesel::sql_types::Int4)]
+            trade_count: i32,
+        }
+
+        let mut conn = self.get_connection().await?;
+        let rows: Vec<Row> = diesel::sql_query(
+            "SELECT bucket, pool_id, base_coin_type, quote_coin_type,
+                    open::text, high::text, low::text, close::text,
+                    volume_quote::text, trade_count
+             FROM ohlc_1m
+             WHERE bucket >= $1 AND bucket < $2
+             ORDER BY bucket ASC
+             LIMIT $3",
+        )
+        .bind::<diesel::sql_types::Timestamptz, _>(from)
+        .bind::<diesel::sql_types::Timestamptz, _>(to)
+        .bind::<diesel::sql_types::Int8, _>(limit)
+        .load(&mut conn)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| RolloffOhlcRow {
+                bucket: r.bucket,
+                pool_id: r.pool_id,
+                base_coin_type: r.base_coin_type,
+                quote_coin_type: r.quote_coin_type,
+                open: r.open,
+                high: r.high,
+                low: r.low,
+                close: r.close,
+                volume_quote: r.volume_quote,
+                trade_count: r.trade_count,
+            })
+            .collect())
+    }
+
+    pub async fn get_rolloff_watermark(
+        &self,
+        table_name: &str,
+    ) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = diesel::sql_types::Timestamptz)]
+            last_rolled_time: chrono::DateTime<chrono::Utc>,
+        }
+
+        let mut conn = self.get_connection().await?;
+        let row: Option<Row> = diesel::sql_query(
+            "SELECT last_rolled_time FROM rolloff_watermarks WHERE table_name = $1",
+        )
+        .bind::<diesel::sql_types::Text, _>(table_name)
+        .get_result(&mut conn)
+        .await
+        .optional()?;
+
+        Ok(row.map(|r| r.last_rolled_time).unwrap_or_else(|| {
+            chrono::DateTime::from_timestamp(0, 0).unwrap_or_default()
+        }))
+    }
+
+    pub async fn set_rolloff_watermark(
+        &self,
+        table_name: &str,
+        last_rolled_time: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<()> {
+        let mut conn = self.get_connection().await?;
+        diesel::sql_query(
+            "INSERT INTO rolloff_watermarks (table_name, last_rolled_time)
+             VALUES ($1, $2)
+             ON CONFLICT (table_name) DO UPDATE SET last_rolled_time = EXCLUDED.last_rolled_time",
+        )
+        .bind::<diesel::sql_types::Text, _>(table_name)
+        .bind::<diesel::sql_types::Timestamptz, _>(last_rolled_time)
+        .execute(&mut conn)
+        .await?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SwapRow {
+    pub time: chrono::DateTime<chrono::Utc>,
+    pub tx_digest: String,
+    pub event_seq: i32,
+    pub protocol: String,
+    pub pool_id: String,
+    pub amount_base: String,
+    pub amount_quote: String,
+    pub price_quote_per_base: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct OhlcQueryRow {
+    pub bucket: chrono::DateTime<chrono::Utc>,
+    pub open: String,
+    pub high: String,
+    pub low: String,
+    pub close: String,
+    pub volume_quote: String,
+    pub trade_count: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct RolloffSwapRow {
+    pub time: chrono::DateTime<chrono::Utc>,
+    pub tx_digest: String,
+    pub event_seq: i32,
+    pub protocol: String,
+    pub pool_id: String,
+    pub base_coin_type: String,
+    pub quote_coin_type: String,
+    pub amount_base: String,
+    pub amount_quote: String,
+    pub price_quote_per_base: String,
+    pub fee_amount: Option<String>,
+    pub sender: Option<String>,
+    pub checkpoint_seq: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct RolloffOhlcRow {
+    pub bucket: chrono::DateTime<chrono::Utc>,
+    pub pool_id: String,
+    pub base_coin_type: String,
+    pub quote_coin_type: String,
+    pub open: String,
+    pub high: String,
+    pub low: String,
+    pub close: String,
+    pub volume_quote: String,
+    pub trade_count: i32,
 }

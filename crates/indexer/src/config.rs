@@ -150,9 +150,7 @@ impl AppArgs {
 }
 
 pub fn require_database_url() -> Result<Url> {
-    std::env::var("DATABASE_URL")
-        .context("DATABASE_URL must be set")
-        .and_then(|raw| raw.parse::<Url>().context("invalid DATABASE_URL"))
+    indexer_store::postgres_url::resolve_postgres_url("POSTGRES", "DATABASE_URL")
 }
 
 pub fn require_kafka_brokers() -> Result<String> {

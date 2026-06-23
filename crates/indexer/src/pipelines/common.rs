@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sui_indexer_alt_framework::{
     FieldCount,
+    types::base_types::ObjectID,
     types::full_checkpoint_content::Checkpoint,
 };
 
@@ -202,6 +203,35 @@ pub fn classify_swap(event_type: &str) -> Option<Protocol> {
 
 pub fn classify_pool_create(event_type: &str) -> Option<Protocol> {
     protocol::classify_pool_create_event(event_type)
+}
+
+/// When pool-create events omit coin types (e.g. Turbos `PoolCreatedEvent`), read them from
+/// the created `Pool<CoinA, CoinB, …>` object's generic type parameters in the same transaction.
+pub fn enrich_pool_coin_types_from_checkpoint(
+    checkpoint: &Checkpoint,
+    tx_digest: &str,
+    pool_id: &str,
+) -> Option<(String, String)> {
+    let pool_oid: ObjectID = pool_id.parse().ok()?;
+    for tx in &checkpoint.transactions {
+        if tx.transaction.digest().to_string() != tx_digest {
+            continue;
+        }
+        for obj in tx.output_objects(&checkpoint.object_set) {
+            if obj.id() != pool_oid {
+                continue;
+            }
+            let move_obj = obj.data.try_as_move()?;
+            let params: Vec<_> = move_obj
+                .type_()
+                .type_params()
+                .into_iter()
+                .map(|t| t.into_owned())
+                .collect();
+            return pool_id::coin_types_from_pool_type_params(&params);
+        }
+    }
+    None
 }
 
 pub fn swap_partition_key(envelope: &MessageEnvelope) -> String {

@@ -20,6 +20,10 @@ path = "src/bin/volume-engine.rs"
 name = "ohlc-aggregator"
 path = "src/bin/ohlc-aggregator.rs"
 
+[[bin]]
+name = "rolloff-job"
+path = "src/bin/rolloff-job.rs"
+
 [dependencies]
 indexer-store = { path = "../indexer-store" }
 event-bindings = { path = "../event-bindings" }
@@ -45,5 +49,6 @@ lru.workspace = true
 rustls.workspace = true
 hex.workspace = true
 redis.workspace = true
+clickhouse = { version = "0.13", features = ["chrono"] }
 move-core-types = { git = "https://github.com/MystenLabs/sui.git", rev = "d10b7db79a6634acbc483ad8633a7d27fe3bc7c8" }
 http = "1"

@@ -10,7 +10,8 @@ use tracing::info;
 
 use super::common::{
     AppMetrics, RawPoolFact, build_pool_envelope, classify_pool_create, decode_event,
-    iterate_checkpoint_events, pool_partition_key, raw_pool_fact,
+    enrich_pool_coin_types_from_checkpoint, iterate_checkpoint_events, pool_partition_key,
+    raw_pool_fact,
 };
 
 pub const NAME: &str = "dex_pool";
@@ -51,7 +52,15 @@ impl Processor for DexPoolHandler {
             };
             matched += 1;
             let parsed_json = decode_event(&self.metrics, NAME, &event, protocol)?;
-            let fields = extract_pool_create_fields(protocol, &parsed_json)?;
+            let mut fields = extract_pool_create_fields(protocol, &parsed_json)?;
+            if fields.coin_type_a.is_none() || fields.coin_type_b.is_none() {
+                if let Some((coin_type_a, coin_type_b)) =
+                    enrich_pool_coin_types_from_checkpoint(checkpoint, &event.tx_digest, &fields.pool_id)
+                {
+                    fields.coin_type_a = Some(coin_type_a);
+                    fields.coin_type_b = Some(coin_type_b);
+                }
+            }
             rows.push(raw_pool_fact(&event, protocol, parsed_json, fields));
         }
 

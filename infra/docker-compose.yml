@@ -5,10 +5,6 @@ services:
     image: postgres:16
     env_file:
       - ../.env
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-postgres}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_DB: ${POSTGRES_DB:-sui_indexer}
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     healthcheck:
@@ -81,7 +77,8 @@ services:
       - ../.env
     environment:
       KAFKA_BROKERS: kafka:29092
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-sui_indexer}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
     command: ["catalog-worker"]
     depends_on:
       postgres:
@@ -99,7 +96,8 @@ services:
       - ../.env
     environment:
       KAFKA_BROKERS: kafka:29092
-      DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-sui_indexer}
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
     command: ["swap-normalizer"]
     depends_on:
       postgres:
@@ -147,7 +145,9 @@ services:
       - ../.env
     environment:
       KAFKA_BROKERS: kafka:29092
-      TIMESCALE_URL: postgres://${TIMESCALE_USER:-postgres}:${TIMESCALE_PASSWORD:-postgres}@timescaledb:5432/${TIMESCALE_DB:-sui_metrics}
+      TIMESCALE_HOST: timescaledb
+      TIMESCALE_PORT: "5432"
+      TIMESCALE_URL: postgres://postgres:postgres@timescaledb:5432/sui_metrics
       REDIS_URL: redis://redis:6379
     command: ["volume-engine"]
     depends_on:
@@ -170,7 +170,9 @@ services:
       - ../.env
     environment:
       KAFKA_BROKERS: kafka:29092
-      TIMESCALE_URL: postgres://${TIMESCALE_USER:-postgres}:${TIMESCALE_PASSWORD:-postgres}@timescaledb:5432/${TIMESCALE_DB:-sui_metrics}
+      TIMESCALE_HOST: timescaledb
+      TIMESCALE_PORT: "5432"
+      TIMESCALE_URL: postgres://postgres:postgres@timescaledb:5432/sui_metrics
     command: ["ohlc-aggregator"]
     depends_on:
       kafka:
@@ -179,5 +181,64 @@ services:
         condition: service_healthy
       swap-normalizer:
         condition: service_started
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24
+    ports:
+      - "${CLICKHOUSE_HTTP_PORT:-8123}:8123"
+      - "${CLICKHOUSE_NATIVE_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api-service:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      TIMESCALE_HOST: timescaledb
+      TIMESCALE_PORT: "5432"
+      TIMESCALE_URL: postgres://postgres:postgres@timescaledb:5432/sui_metrics
+      REDIS_URL: redis://redis:6379
+      CLICKHOUSE_URL: http://clickhouse:8123
+    ports:
+      - "${API_PORT:-8081}:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  rolloff-job:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.processors
+    env_file:
+      - ../.env
+    environment:
+      TIMESCALE_HOST: timescaledb
+      TIMESCALE_PORT: "5432"
+      TIMESCALE_URL: postgres://postgres:postgres@timescaledb:5432/sui_metrics
+      CLICKHOUSE_URL: http://clickhouse:8123
+    command: ["rolloff-job"]
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"

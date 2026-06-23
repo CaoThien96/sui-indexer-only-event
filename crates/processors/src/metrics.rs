@@ -72,6 +72,34 @@ impl ProcessorMetrics {
 }
 
 #[derive(Clone)]
+pub struct RolloffMetrics {
+    pub rows: IntCounterVec,
+    pub errors: IntCounterVec,
+}
+
+impl RolloffMetrics {
+    pub fn new(registry: &Registry) -> anyhow::Result<Arc<Self>> {
+        let rows = IntCounterVec::new(
+            prometheus::Opts::new(
+                "processor_rolloff_rows_total",
+                "Rows rolled off from TimescaleDB to ClickHouse",
+            ),
+            &["table"],
+        )?;
+        let errors = IntCounterVec::new(
+            prometheus::Opts::new(
+                "processor_rolloff_errors_total",
+                "Roll-off errors by table",
+            ),
+            &["table"],
+        )?;
+        registry.register(Box::new(rows.clone()))?;
+        registry.register(Box::new(errors.clone()))?;
+        Ok(Arc::new(Self { rows, errors }))
+    }
+}
+
+#[derive(Clone)]
 pub struct MetricsBundle {
     pub swaps_fact_inserted: IntCounter,
     pub pool_liquidity_inserted: IntCounter,

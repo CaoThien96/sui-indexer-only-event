@@ -5,6 +5,7 @@ members = [
     "crates/indexer-store",
     "crates/event-bindings",
     "crates/processors",
+    "crates/api-service",
 ]
 
 [workspace.package]
@@ -40,6 +41,9 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rust_decimal = { version = "1", features = ["serde-with-str"] }
 lru = "0.12"
 redis = { version = "0.27", features = ["tokio-comp"] }
+clickhouse = { version = "0.13", features = ["chrono"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["trace"] }
 
 [patch."https://github.com/MystenLabs/move-binding"]
 move-binding = { path = "crates/event-bindings/vendor/move-binding/move-binding" }

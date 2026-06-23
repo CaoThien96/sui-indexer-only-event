@@ -16,7 +16,8 @@ RUN cargo build --release -p sui-processors \
     --bin catalog-worker \
     --bin swap-normalizer \
     --bin volume-engine \
-    --bin ohlc-aggregator
+    --bin ohlc-aggregator \
+    --bin rolloff-job
 
 FROM debian:bookworm-slim
 
@@ -29,3 +30,4 @@ COPY --from=builder /app/target/release/catalog-worker /usr/local/bin/catalog-wo
 COPY --from=builder /app/target/release/swap-normalizer /usr/local/bin/swap-normalizer
 COPY --from=builder /app/target/release/volume-engine /usr/local/bin/volume-engine
 COPY --from=builder /app/target/release/ohlc-aggregator /usr/local/bin/ohlc-aggregator
+COPY --from=builder /app/target/release/rolloff-job /usr/local/bin/rolloff-job

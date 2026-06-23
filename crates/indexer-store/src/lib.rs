@@ -4,6 +4,7 @@ pub mod kafka;
 mod kafka_tests;
 pub mod model;
 pub mod postgres;
+pub mod postgres_url;
 #[cfg(test)]
 mod postgres_tests;
 pub mod schema;

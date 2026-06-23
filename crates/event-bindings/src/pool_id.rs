@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use move_core_types::language_storage::TypeTag;
 use serde_json::Value;
 
 use crate::protocol::Protocol;
@@ -77,6 +78,20 @@ pub fn extract_pool_create_fields(
         coin_type_b,
         tick_spacing,
     })
+}
+
+/// Read coin types from a CLMM `Pool<CoinA, CoinB, …>` object's generic type parameters.
+pub fn coin_types_from_pool_type_params(type_params: &[TypeTag]) -> Option<(String, String)> {
+    let coin_a = type_param_to_coin_type(type_params.first()?)?;
+    let coin_b = type_param_to_coin_type(type_params.get(1)?)?;
+    Some((coin_a, coin_b))
+}
+
+fn type_param_to_coin_type(tag: &TypeTag) -> Option<String> {
+    match tag {
+        TypeTag::Struct(s) => Some(s.to_canonical_string(true)),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -168,5 +183,19 @@ mod tests {
     fn rejects_missing_pool_id() {
         let err = extract_pool_id(Protocol::Mmt, &json!({})).unwrap_err();
         assert!(err.to_string().contains("pool_id"));
+    }
+
+    #[test]
+    fn reads_coin_types_from_pool_generic_params() {
+        use std::str::FromStr;
+
+        let pool_type = "0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::pool::Pool<0x15a837268acd6d5f1f02784048e129393cff48b9cd55b6b2839cbd60e31faa27::dogtrain::DOGTRAIN, 0x2::sui::SUI, 0x91bfbc386a41afcfd9b2533058d7e915a1d3829089cc268ff4333d54d6339ca1::fee100bps::FEE100BPS>";
+        let tag = TypeTag::from_str(pool_type).unwrap();
+        let TypeTag::Struct(struct_tag) = tag else {
+            panic!("expected struct");
+        };
+        let (a, b) = coin_types_from_pool_type_params(&struct_tag.type_params).unwrap();
+        assert!(a.contains("dogtrain::DOGTRAIN"));
+        assert!(b.contains("sui::SUI"));
     }
 }

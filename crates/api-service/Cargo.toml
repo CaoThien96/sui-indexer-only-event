@@ -1,0 +1,27 @@
+[package]
+name = "sui-api-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "sui-api-service"
+path = "src/main.rs"
+
+[dependencies]
+sui-processors = { path = "../processors" }
+indexer-store = { path = "../indexer-store" }
+tokio.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dotenvy.workspace = true
+prometheus.workspace = true
+url.workspace = true
+chrono.workspace = true
+redis.workspace = true
+clickhouse.workspace = true
+axum.workspace = true
+tower-http.workspace = true

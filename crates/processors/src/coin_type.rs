@@ -19,6 +19,18 @@ pub fn normalize(coin_type: &str) -> String {
     trimmed.to_string()
 }
 
+/// Coin-type strings to match when querying `pools` (legacy rows may omit the `0x` prefix).
+pub fn pool_lookup_variants(coin_type: &str) -> Vec<String> {
+    let normalized = normalize(coin_type);
+    let mut variants = vec![normalized.clone()];
+    if let Some(stripped) = normalized.strip_prefix("0x") {
+        variants.push(stripped.to_string());
+    }
+    variants.sort();
+    variants.dedup();
+    variants
+}
+
 fn parse_struct_tag(coin_type: &str) -> Option<String> {
     if let Ok(tag) = StructTag::from_str(coin_type) {
         return Some(struct_tag_to_short(&tag));
@@ -91,5 +103,16 @@ mod tests {
         let mmt_sui =
             "0000000000000000000000000000000000000000000000000000000000000002::sui::SUI";
         assert_eq!(normalize(mmt_sui), SUI_COIN_TYPE);
+    }
+
+    #[test]
+    fn pool_lookup_variants_includes_legacy_without_0x() {
+        let coin = "0x657b848cf176a16ae9f8eb3638e9d5f759c2c54fb92fd7e05255404dee455e73::sntl::SNTL";
+        let variants = pool_lookup_variants(coin);
+        assert!(variants.contains(&coin.to_string()));
+        assert!(variants.contains(
+            &"657b848cf176a16ae9f8eb3638e9d5f759c2c54fb92fd7e05255404dee455e73::sntl::SNTL"
+                .to_string()
+        ));
     }
 }

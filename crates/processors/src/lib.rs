@@ -10,3 +10,5 @@ pub mod store;
 pub mod swap_normalizer;
 pub mod timescale;
 pub mod volume;
+pub mod clickhouse;
+pub mod rolloff;
