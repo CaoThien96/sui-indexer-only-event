@@ -43,11 +43,18 @@ docker compose -f infra/docker-compose.yml ps
 | Redis          | localhost:6379    |
 | ClickHouse HTTP| localhost:8123    |
 
-Create Kafka topics (required once, or after `docker compose down -v`):
+Create Kafka topics **before** processors consume (or restart `catalog-worker` after `./infra/kafka/create-topics.sh`):
 
 ```bash
 chmod +x infra/kafka/create-topics.sh
 ./infra/kafka/create-topics.sh
+```
+
+If tokens exist in Kafka UI but not in Postgres/API, `catalog-worker` likely started before topics existed:
+
+```bash
+docker compose -f infra/docker-compose.yml restart catalog-worker
+docker compose -f infra/docker-compose.yml logs -f catalog-worker
 ```
 
 ---
@@ -138,6 +145,10 @@ Indexer logs: terminal where `cargo run -p sui-token-indexer` is running.
 ```bash
 curl -s localhost:8081/health | jq
 
+curl -s 'localhost:8081/v1/tokens?limit=20' | jq
+
+curl -s 'localhost:8081/v1/tokens?q=SUI&limit=20' | jq
+
 curl -s 'localhost:8081/v1/tokens/0x2::sui::SUI' | jq
 
 curl -s 'localhost:8081/v1/tokens/0x2::sui::SUI/pools' | jq
@@ -149,6 +160,32 @@ curl -s 'localhost:8081/v1/tokens/0x2::sui::SUI/swaps?limit=20' | jq
 # Example memecoin (URL path uses catch-all for `::`)
 curl -s 'localhost:8081/v1/tokens/0x15a837268acd6d5f1f02784048e129393cff48b9cd55b6b2839cbd60e31faa27::dogtrain::DOGTRAIN' | jq
 ```
+
+---
+
+## 7b. MVP frontend (`apps/web`)
+
+Requires API + processors running (`localhost:8081`). Vite proxies `/api` → API (see `apps/web/vite.config.ts`).
+
+```bash
+cp apps/web/.env.example apps/web/.env
+cd apps/web && npm install && npm run dev
+```
+
+Open http://localhost:5173
+
+| Page | Route |
+|------|-------|
+| Token list + search | `/` |
+| Token detail | `/token/{coin_type}` e.g. `/token/0x2::sui::SUI` |
+
+Production build:
+
+```bash
+cd apps/web && npm run build && npm run preview
+```
+
+Set `VITE_API_BASE_URL=http://localhost:8081` if not using the dev proxy. API CORS: `API_CORS_ORIGINS` in root `.env` (default `http://localhost:5173`).
 
 ---
 

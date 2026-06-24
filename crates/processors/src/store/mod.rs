@@ -328,6 +328,101 @@ impl CatalogStore {
             })
             .collect())
     }
+
+    pub async fn list_tokens(
+        &self,
+        q: Option<&str>,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> anyhow::Result<Vec<TokenListRow>> {
+        let mut conn = self.get_connection().await?;
+        let pattern = q.map(|s| format!("%{s}%"));
+        let (cursor_priority, cursor_cp, cursor_coin_type) = parse_token_list_cursor(cursor);
+
+        #[derive(diesel::QueryableByName)]
+        struct Row {
+            #[diesel(sql_type = diesel::sql_types::Text)]
+            coin_type: String,
+            #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+            name: Option<String>,
+            #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+            symbol: Option<String>,
+            #[diesel(sql_type = diesel::sql_types::Int2)]
+            decimals: i16,
+            #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+            image_url: Option<String>,
+            #[diesel(sql_type = diesel::sql_types::Int4)]
+            priority: i32,
+            #[diesel(sql_type = diesel::sql_types::Int8)]
+            first_seen_cp: i64,
+        }
+
+        let rows: Vec<Row> = diesel::sql_query(
+            "SELECT t.coin_type, t.name, t.symbol, t.decimals, t.image_url,
+                    COALESCE(w.priority, 0) AS priority,
+                    COALESCE(t.first_seen_cp, 0) AS first_seen_cp
+             FROM tokens t
+             LEFT JOIN token_watchlist w ON w.coin_type = t.coin_type
+             WHERE ($1::text IS NULL OR t.coin_type ILIKE $1 OR t.symbol ILIKE $1 OR t.name ILIKE $1)
+               AND (
+                 $2::int IS NULL
+                 OR COALESCE(w.priority, 0) < $2
+                 OR (COALESCE(w.priority, 0) = $2 AND COALESCE(t.first_seen_cp, 0) < $3)
+                 OR (
+                   COALESCE(w.priority, 0) = $2
+                   AND COALESCE(t.first_seen_cp, 0) = $3
+                   AND t.coin_type > $4
+                 )
+               )
+             ORDER BY COALESCE(w.priority, 0) DESC, COALESCE(t.first_seen_cp, 0) DESC, t.coin_type ASC
+             LIMIT $5",
+        )
+        .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(pattern)
+        .bind::<diesel::sql_types::Nullable<diesel::sql_types::Int4>, _>(cursor_priority)
+        .bind::<diesel::sql_types::Nullable<diesel::sql_types::Int8>, _>(cursor_cp)
+        .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(cursor_coin_type)
+        .bind::<diesel::sql_types::Int8, _>(limit)
+        .load(&mut conn)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| TokenListRow {
+                coin_type: r.coin_type,
+                name: r.name,
+                symbol: r.symbol,
+                decimals: r.decimals,
+                image_url: r.image_url,
+                priority: r.priority,
+                first_seen_cp: r.first_seen_cp,
+            })
+            .collect())
+    }
+}
+
+fn parse_token_list_cursor(cursor: Option<&str>) -> (Option<i32>, Option<i64>, Option<String>) {
+    let Some(cursor) = cursor else {
+        return (None, None, None);
+    };
+    let mut parts = cursor.splitn(3, '|');
+    let priority = parts.next().and_then(|p| p.parse().ok());
+    let cp = parts.next().and_then(|p| p.parse().ok());
+    let coin_type = parts.next().map(str::to_string);
+    if priority.is_none() || cp.is_none() || coin_type.is_none() {
+        return (None, None, None);
+    }
+    (priority, cp, coin_type)
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenListRow {
+    pub coin_type: String,
+    pub name: Option<String>,
+    pub symbol: Option<String>,
+    pub decimals: i16,
+    pub image_url: Option<String>,
+    pub priority: i32,
+    pub first_seen_cp: i64,
 }
 
 #[derive(Debug, Clone)]

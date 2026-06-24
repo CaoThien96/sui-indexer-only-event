@@ -209,6 +209,7 @@ services:
       TIMESCALE_URL: postgres://postgres:postgres@timescaledb:5432/sui_metrics
       REDIS_URL: redis://redis:6379
       CLICKHOUSE_URL: http://clickhouse:8123
+      API_CORS_ORIGINS: ${API_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174}
     ports:
       - "${API_PORT:-8081}:8081"
     depends_on:

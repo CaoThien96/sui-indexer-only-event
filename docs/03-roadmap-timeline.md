@@ -108,6 +108,8 @@ gantt
 
 **MVP gate:** Token detail with volume, price, pools, OHLC chart, swap history.
 
+**MVP frontend:** [`apps/web`](../apps/web) — Vite + React dashboard (token list, detail, chart, swaps). See [command.md](../command.md) §7b.
+
 ---
 
 ## 5. Phase 3–5

@@ -36,3 +36,23 @@ pub fn hot_storage_days() -> i64 {
         .and_then(|v| v.parse().ok())
         .unwrap_or(30)
 }
+
+pub fn api_cors_origins() -> Vec<String> {
+    env::var("API_CORS_ORIGINS")
+        .ok()
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            vec![
+                "http://localhost:5173".to_string(),
+                "http://127.0.0.1:5173".to_string(),
+                "http://localhost:5174".to_string(),
+                "http://127.0.0.1:5174".to_string(),
+            ]
+        })
+}

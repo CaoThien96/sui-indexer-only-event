@@ -366,6 +366,25 @@ ORDER BY (coin_type, ts, tx_digest);
 
 ## 11. API response shapes (Phase 2)
 
+### `GET /v1/tokens`
+
+Query: `q?` (substring on `coin_type`, `symbol`, `name`), `limit` (default 50, max 100), `cursor?` (`priority|first_seen_cp|coin_type`).
+
+```json
+{
+  "tokens": [
+    {
+      "coin_type": "0x2::sui::SUI",
+      "name": "Sui",
+      "symbol": "SUI",
+      "decimals": 9,
+      "image_url": null
+    }
+  ],
+  "next_cursor": "0|288461467|0x2::sui::SUI"
+}
+```
+
 ### `GET /v1/tokens/{coin_type}`
 
 ```json

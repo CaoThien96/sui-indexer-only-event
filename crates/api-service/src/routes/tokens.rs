@@ -116,7 +116,7 @@ pub async fn token_swaps(
     Query(query): Query<SwapsQuery>,
 ) -> Response {
     let coin_type = coin_type::normalize(&coin_type);
-    let route = "token_swaps";
+    let _route = "token_swaps";
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
 
     let before_time = query

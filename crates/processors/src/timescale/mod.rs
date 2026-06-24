@@ -328,12 +328,12 @@ impl TimescaleStore {
         to: chrono::DateTime<chrono::Utc>,
         base_coin_type: Option<&str>,
     ) -> anyhow::Result<Vec<OhlcQueryRow>> {
-        let table = match interval {
-            "1m" => "ohlc_1m",
-            "5m" => "ohlc_5m",
-            "1h" => "ohlc_1h",
-            "4h" => "ohlc_4h",
-            "24h" => "ohlc_24h",
+        let bucket_width = match interval {
+            "1m" => None,
+            "5m" => Some("5 minutes"),
+            "1h" => Some("1 hour"),
+            "4h" => Some("4 hours"),
+            "24h" => Some("24 hours"),
             _ => return Err(anyhow::anyhow!("invalid interval: {interval}")),
         };
 
@@ -356,16 +356,58 @@ impl TimescaleStore {
         }
 
         let mut conn = self.get_connection().await?;
-        let rows: Vec<Row> = if let Some(base) = base_coin_type {
-            let sql = format!(
-                "SELECT bucket, open::text, high::text, low::text, close::text,
-                        volume_quote::text, trade_count
-                 FROM {table}
+        let rows: Vec<Row> = if let Some(width) = bucket_width {
+            if let Some(base) = base_coin_type {
+                let sql = format!(
+                    "SELECT time_bucket('{width}', bucket) AS bucket,
+                            first(open, bucket)::text AS open,
+                            max(high)::text AS high,
+                            min(low)::text AS low,
+                            last(close, bucket)::text AS close,
+                            sum(volume_quote)::text AS volume_quote,
+                            sum(trade_count)::int AS trade_count
+                     FROM ohlc_1m
+                     WHERE pool_id = $1 AND base_coin_type = $2
+                       AND bucket >= $3 AND bucket <= $4
+                     GROUP BY 1, pool_id, base_coin_type, quote_coin_type
+                     ORDER BY 1 ASC"
+                );
+                diesel::sql_query(&sql)
+                    .bind::<diesel::sql_types::Text, _>(pool_id)
+                    .bind::<diesel::sql_types::Text, _>(base)
+                    .bind::<diesel::sql_types::Timestamptz, _>(from)
+                    .bind::<diesel::sql_types::Timestamptz, _>(to)
+                    .load(&mut conn)
+                    .await?
+            } else {
+                let sql = format!(
+                    "SELECT time_bucket('{width}', bucket) AS bucket,
+                            first(open, bucket)::text AS open,
+                            max(high)::text AS high,
+                            min(low)::text AS low,
+                            last(close, bucket)::text AS close,
+                            sum(volume_quote)::text AS volume_quote,
+                            sum(trade_count)::int AS trade_count
+                     FROM ohlc_1m
+                     WHERE pool_id = $1 AND bucket >= $2 AND bucket <= $3
+                     GROUP BY 1, pool_id, base_coin_type, quote_coin_type
+                     ORDER BY 1 ASC"
+                );
+                diesel::sql_query(&sql)
+                    .bind::<diesel::sql_types::Text, _>(pool_id)
+                    .bind::<diesel::sql_types::Timestamptz, _>(from)
+                    .bind::<diesel::sql_types::Timestamptz, _>(to)
+                    .load(&mut conn)
+                    .await?
+            }
+        } else if let Some(base) = base_coin_type {
+            let sql = "SELECT bucket, open::text, high::text, low::text, close::text,
+                        volume_quote::text, trade_count::int
+                 FROM ohlc_1m
                  WHERE pool_id = $1 AND base_coin_type = $2
                    AND bucket >= $3 AND bucket <= $4
-                 ORDER BY bucket ASC"
-            );
-            diesel::sql_query(&sql)
+                 ORDER BY bucket ASC";
+            diesel::sql_query(sql)
                 .bind::<diesel::sql_types::Text, _>(pool_id)
                 .bind::<diesel::sql_types::Text, _>(base)
                 .bind::<diesel::sql_types::Timestamptz, _>(from)
@@ -373,14 +415,12 @@ impl TimescaleStore {
                 .load(&mut conn)
                 .await?
         } else {
-            let sql = format!(
-                "SELECT bucket, open::text, high::text, low::text, close::text,
-                        volume_quote::text, trade_count
-                 FROM {table}
+            let sql = "SELECT bucket, open::text, high::text, low::text, close::text,
+                        volume_quote::text, trade_count::int
+                 FROM ohlc_1m
                  WHERE pool_id = $1 AND bucket >= $2 AND bucket <= $3
-                 ORDER BY bucket ASC"
-            );
-            diesel::sql_query(&sql)
+                 ORDER BY bucket ASC";
+            diesel::sql_query(sql)
                 .bind::<diesel::sql_types::Text, _>(pool_id)
                 .bind::<diesel::sql_types::Timestamptz, _>(from)
                 .bind::<diesel::sql_types::Timestamptz, _>(to)

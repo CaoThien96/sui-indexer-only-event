@@ -1,14 +1,15 @@
 use anyhow::Result;
-use indexer_store::{FactTopic, KafkaFactReader};
+use indexer_store::{FactTopic, KafkaFactReader, parse_envelope, wait_for_topics_available};
 use prometheus::Registry;
-use tracing::{error, info};
+use rdkafka::Message;
+use tracing::{error, info, warn};
 
 use sui_processors::catalog::{handle_pool_message, handle_token_metadata_message};
 use sui_processors::config::{
     self, catalog_consumer_group, database_url, kafka_brokers, kafka_client_id, metrics_address,
 };
 use sui_processors::metrics::ProcessorMetrics;
-use sui_processors::runtime::serve_metrics;
+use sui_processors::runtime::{kafka_backoff_resubscribe, serve_metrics};
 use sui_processors::store::CatalogStore;
 
 #[tokio::main]
@@ -25,6 +26,12 @@ async fn main() -> Result<()> {
     let db_url = database_url()?;
     let brokers = kafka_brokers()?;
     let group = catalog_consumer_group();
+
+    wait_for_topics_available(
+        &brokers,
+        &[FactTopic::PoolRaw, FactTopic::TokenMetadataRaw],
+    )
+    .await?;
 
     let store = CatalogStore::connect(db_url).await?;
     store.run_migrations().await?;
@@ -51,57 +58,75 @@ async fn main() -> Result<()> {
 
     let store_pools = store.clone();
     let metrics_pools = metrics.clone();
+    let pool_topics = [FactTopic::PoolRaw];
     let pool_task = tokio::spawn(async move {
         loop {
-            match pool_reader.recv_envelope().await {
-                Ok((envelope, message)) => {
-                    if let Err(e) =
-                        handle_pool_message(&store_pools, &metrics_pools, &envelope).await
-                    {
-                        error!(error = %e, "Failed to handle pool message");
-                        metrics_pools
-                            .decode_errors
-                            .with_label_values(&["catalog-worker", FactTopic::PoolRaw.as_str()])
-                            .inc();
-                    } else if let Err(e) = pool_reader.commit_message(&message) {
-                        error!(error = %e, "Failed to commit pool offset");
-                    }
-                }
+            let message = match pool_reader.recv_raw().await {
+                Ok(m) => m,
                 Err(e) => {
-                    error!(error = %e, "Pool consumer error");
+                    error!(error = %e, "Pool consumer recv failed");
+                    kafka_backoff_resubscribe(&pool_reader, &pool_topics, "catalog-pools").await;
+                    continue;
+                }
+            };
+
+            let envelope = match parse_envelope(&message) {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        topic = message.topic(),
+                        partition = message.partition(),
+                        offset = message.offset(),
+                        "Skipping invalid pool envelope"
+                    );
                     metrics_pools
                         .decode_errors
                         .with_label_values(&["catalog-worker", FactTopic::PoolRaw.as_str()])
                         .inc();
+                    let _ = pool_reader.commit_message(&message);
+                    continue;
                 }
+            };
+
+            if let Err(e) =
+                handle_pool_message(&store_pools, &metrics_pools, &envelope).await
+            {
+                error!(error = %e, "Failed to handle pool message");
+                metrics_pools
+                    .decode_errors
+                    .with_label_values(&["catalog-worker", FactTopic::PoolRaw.as_str()])
+                    .inc();
+            } else if let Err(e) = pool_reader.commit_message(&message) {
+                error!(error = %e, "Failed to commit pool offset");
             }
         }
     });
 
     let store_tokens = store.clone();
     let metrics_tokens = metrics.clone();
+    let token_topics = [FactTopic::TokenMetadataRaw];
     let token_task = tokio::spawn(async move {
         loop {
-            match token_reader.recv_envelope().await {
-                Ok((envelope, message)) => {
-                    if let Err(e) =
-                        handle_token_metadata_message(&store_tokens, &metrics_tokens, &envelope)
-                            .await
-                    {
-                        error!(error = %e, "Failed to handle token metadata message");
-                        metrics_tokens
-                            .decode_errors
-                            .with_label_values(&[
-                                "catalog-worker",
-                                FactTopic::TokenMetadataRaw.as_str(),
-                            ])
-                            .inc();
-                    } else if let Err(e) = token_reader.commit_message(&message) {
-                        error!(error = %e, "Failed to commit token offset");
-                    }
-                }
+            let message = match token_reader.recv_raw().await {
+                Ok(m) => m,
                 Err(e) => {
-                    error!(error = %e, "Token consumer error");
+                    error!(error = %e, "Token consumer recv failed");
+                    kafka_backoff_resubscribe(&token_reader, &token_topics, "catalog-tokens").await;
+                    continue;
+                }
+            };
+
+            let envelope = match parse_envelope(&message) {
+                Ok(e) => e,
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        topic = message.topic(),
+                        partition = message.partition(),
+                        offset = message.offset(),
+                        "Skipping invalid token envelope"
+                    );
                     metrics_tokens
                         .decode_errors
                         .with_label_values(&[
@@ -109,7 +134,24 @@ async fn main() -> Result<()> {
                             FactTopic::TokenMetadataRaw.as_str(),
                         ])
                         .inc();
+                    let _ = token_reader.commit_message(&message);
+                    continue;
                 }
+            };
+
+            if let Err(e) =
+                handle_token_metadata_message(&store_tokens, &metrics_tokens, &envelope).await
+            {
+                error!(error = %e, "Failed to handle token metadata message");
+                metrics_tokens
+                    .decode_errors
+                    .with_label_values(&[
+                        "catalog-worker",
+                        FactTopic::TokenMetadataRaw.as_str(),
+                    ])
+                    .inc();
+            } else if let Err(e) = token_reader.commit_message(&message) {
+                error!(error = %e, "Failed to commit token offset");
             }
         }
     });

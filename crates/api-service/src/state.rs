@@ -70,6 +70,15 @@ impl AppState {
         self.catalog.list_pools_for_token(coin_type, limit).await
     }
 
+    pub async fn list_tokens(
+        &self,
+        q: Option<&str>,
+        limit: i64,
+        cursor: Option<&str>,
+    ) -> Result<Vec<sui_processors::store::TokenListRow>> {
+        self.catalog.list_tokens(q, limit, cursor).await
+    }
+
     pub async fn redis_price(
         &self,
         coin_type: &str,

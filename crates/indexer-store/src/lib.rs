@@ -12,6 +12,6 @@ pub mod schema;
 pub use composite::{CompositeConnection, CompositeStore};
 pub use kafka::{
     FactTopic, KafkaFactReader, KafkaFactWriter, MessageEnvelope, compute_message_id, now_ms,
-    parse_envelope,
+    parse_envelope, wait_for_topics_available,
 };
 pub use postgres::{DbArgs, PostgresStore};

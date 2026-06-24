@@ -4,6 +4,7 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use sui_processors::clickhouse;
+use tracing::warn;
 
 use crate::dto::{OhlcBarDto, OhlcResponse};
 use crate::query_router::{route_query, StorageTarget};
@@ -47,7 +48,7 @@ pub async fn pool_ohlc(
     let mut bars = Vec::new();
 
     if matches!(target, StorageTarget::Hot | StorageTarget::Both) {
-        if let Ok(rows) = state
+        match state
             .timescale
             .query_ohlc(
                 &pool_id,
@@ -58,16 +59,26 @@ pub async fn pool_ohlc(
             )
             .await
         {
-            for r in rows {
-                bars.push(OhlcBarDto {
-                    bucket: r.bucket.to_rfc3339(),
-                    open: r.open,
-                    high: r.high,
-                    low: r.low,
-                    close: r.close,
-                    volume_quote: r.volume_quote,
-                    trade_count: r.trade_count,
-                });
+            Ok(rows) => {
+                for r in rows {
+                    bars.push(OhlcBarDto {
+                        bucket: r.bucket.to_rfc3339(),
+                        open: r.open,
+                        high: r.high,
+                        low: r.low,
+                        close: r.close,
+                        volume_quote: r.volume_quote,
+                        trade_count: r.trade_count,
+                    });
+                }
+            }
+            Err(e) => {
+                warn!(
+                    pool_id = %pool_id,
+                    interval = %query.interval,
+                    error = %e,
+                    "Timescale OHLC query failed"
+                );
             }
         }
     }

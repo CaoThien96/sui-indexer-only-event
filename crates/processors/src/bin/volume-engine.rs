@@ -1,7 +1,9 @@
+use std::sync::Arc;
+
 use anyhow::Result;
-use indexer_store::{FactTopic, KafkaFactReader};
+use indexer_store::{FactTopic, KafkaFactReader, wait_for_topics_available};
 use prometheus::Registry;
-use tracing::{error, info};
+use tracing::info;
 
 use sui_processors::config::{
     self, kafka_brokers, kafka_client_id, redis_url, timescale_url, volume_engine_consumer_group,
@@ -9,7 +11,7 @@ use sui_processors::config::{
 };
 use sui_processors::metrics::MetricsBundle;
 use sui_processors::redis_cache::RedisCache;
-use sui_processors::runtime::serve_metrics;
+use sui_processors::runtime::{poll_kafka_envelope, serve_metrics};
 use sui_processors::timescale::TimescaleStore;
 use sui_processors::volume::VolumeEngine;
 
@@ -29,13 +31,15 @@ async fn main() -> Result<()> {
     let brokers = kafka_brokers()?;
     let group = volume_engine_consumer_group();
 
+    wait_for_topics_available(&brokers, &[FactTopic::SwapNormalized]).await?;
+
     let store = TimescaleStore::connect(ts_url).await?;
     store.run_migrations().await?;
 
     let cache = RedisCache::connect(&redis)?;
     let registry = Registry::new();
     let metrics = MetricsBundle::new(&registry, "volume-engine")?;
-    let engine = VolumeEngine::new(store, cache, metrics.clone());
+    let engine = Arc::new(VolumeEngine::new(store, cache, metrics.clone()));
 
     let reader = KafkaFactReader::new(
         &brokers,
@@ -47,30 +51,27 @@ async fn main() -> Result<()> {
     let metrics_addr = volume_metrics_address();
     info!("volume-engine started");
 
+    let topics = [FactTopic::SwapNormalized];
     tokio::select! {
         _ = async {
             loop {
-                match reader.recv_envelope().await {
-                    Ok((envelope, message)) => {
+                let engine = Arc::clone(&engine);
+                let metrics = metrics.clone();
+                poll_kafka_envelope(&reader, &topics, "volume-engine", move |envelope| {
+                    let engine = Arc::clone(&engine);
+                    let metrics = metrics.clone();
+                    async move {
                         if let Err(e) = engine.handle(&envelope).await {
-                            error!(error = %e, "volume-engine handler error");
                             metrics
                                 .decode_errors
                                 .with_label_values(&["volume-engine", FactTopic::SwapNormalized.as_str()])
                                 .inc();
+                            return Err(e);
                         }
-                        if let Err(e) = reader.commit_message(&message) {
-                            error!(error = %e, "Failed to commit volume offset");
-                        }
+                        Ok(())
                     }
-                    Err(e) => {
-                        error!(error = %e, "Volume consumer error");
-                        metrics
-                            .decode_errors
-                            .with_label_values(&["volume-engine", FactTopic::SwapNormalized.as_str()])
-                            .inc();
-                    }
-                }
+                })
+                .await;
             }
         } => {},
         result = serve_metrics(registry, &metrics_addr) => result?,

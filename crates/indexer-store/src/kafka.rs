@@ -1,17 +1,18 @@
+use std::collections::HashSet;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use prometheus::{IntCounter, Registry};
 use rdkafka::config::ClientConfig;
-use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::consumer::{BaseConsumer, Consumer, StreamConsumer};
 use rdkafka::message::BorrowedMessage;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::{Message, Offset, TopicPartitionList};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 /// Kafka topics for raw fact streams (Phase 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,7 +137,9 @@ impl KafkaFactWriter {
                 Ok(_) => published += 1,
                 Err((e, _)) => {
                     self.produce_errors.inc();
-                    return Err(e).context("Kafka produce failed");
+                    return Err(e).context(format!(
+                        "Kafka produce failed (topic={topic_name}, key={key})"
+                    ));
                 }
             }
         }
@@ -188,13 +191,16 @@ impl KafkaFactReader {
     }
 
     pub async fn recv_envelope(&self) -> Result<(MessageEnvelope, BorrowedMessage<'_>)> {
-        let message = self
-            .consumer
-            .recv()
-            .await
-            .context("Kafka consumer recv failed")?;
+        let message = self.recv_raw().await?;
         let envelope = parse_envelope(&message)?;
         Ok((envelope, message))
+    }
+
+    pub async fn recv_raw(&self) -> Result<BorrowedMessage<'_>> {
+        self.consumer
+            .recv()
+            .await
+            .context("Kafka consumer recv failed")
     }
 
     pub fn commit_message(&self, message: &BorrowedMessage<'_>) -> Result<()> {
@@ -212,6 +218,42 @@ impl KafkaFactReader {
 
     pub fn group_id(&self) -> &str {
         &self.group_id
+    }
+}
+
+/// Block until all `topics` exist on the broker (retries every 2s).
+pub async fn wait_for_topics_available(brokers: &str, topics: &[FactTopic]) -> Result<()> {
+    let consumer: BaseConsumer = ClientConfig::new()
+        .set("bootstrap.servers", brokers)
+        .set("group.id", "indexer-topic-waiter")
+        .create()
+        .context("failed to create Kafka metadata consumer")?;
+
+    let required: Vec<&str> = topics.iter().map(|t| t.as_str()).collect();
+
+    loop {
+        match consumer.fetch_metadata(None, Duration::from_secs(5)) {
+            Ok(meta) => {
+                let present: HashSet<&str> = meta
+                    .topics()
+                    .iter()
+                    .filter(|t| t.error().is_none())
+                    .map(|t| t.name())
+                    .collect();
+                let missing: Vec<&str> = required
+                    .iter()
+                    .copied()
+                    .filter(|name| !present.contains(name))
+                    .collect();
+                if missing.is_empty() {
+                    info!(topics = ?required, "Kafka topics available");
+                    return Ok(());
+                }
+                warn!(?missing, "Waiting for Kafka topics");
+            }
+            Err(e) => warn!(error = %e, "Kafka metadata fetch failed, retrying"),
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 }
 

@@ -12,6 +12,21 @@ pub struct AmountQuote {
 }
 
 #[derive(Debug, Serialize)]
+pub struct TokenListItem {
+    pub coin_type: String,
+    pub name: Option<String>,
+    pub symbol: Option<String>,
+    pub decimals: i16,
+    pub image_url: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TokenListResponse {
+    pub tokens: Vec<TokenListItem>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct TokenDetailResponse {
     pub coin_type: String,
     pub name: Option<String>,
