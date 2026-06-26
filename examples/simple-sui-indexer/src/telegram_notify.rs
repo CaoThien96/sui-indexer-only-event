@@ -170,6 +170,16 @@ pub async fn notify_processor_error(
     }
 }
 
+/// Send a bot alert message (snip/sell/state). No cooldown dedup.
+pub async fn send_message(text: &str) {
+    let Some(notifier) = notifier() else {
+        return;
+    };
+    if let Err(send_error) = notifier.send_message(text).await {
+        warn!(error = %send_error, "Failed to send Telegram bot alert");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

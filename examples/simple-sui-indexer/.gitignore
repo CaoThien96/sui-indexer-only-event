@@ -1,2 +1,4 @@
 .env
 target/
+
+vault.json

@@ -5,6 +5,7 @@ use clap::Parser;
 use diesel::prelude::*;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use std::collections::HashMap;
+use simple_sui_indexer::bootstrap;
 use tracing::{info, warn};
 
 #[derive(Parser)]
@@ -39,10 +40,11 @@ struct PendingUpdate {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
+    let dotenv = bootstrap::load_dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+    bootstrap::log_dotenv_load(&dotenv);
 
     let args = Args::parse();
     let _ = args;

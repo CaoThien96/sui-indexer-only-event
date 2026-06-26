@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use prometheus::{
-    IntCounter, IntCounterVec, Registry, register_int_counter_vec_with_registry,
-    register_int_counter_with_registry,
+    Histogram, IntCounter, IntCounterVec, Registry, register_histogram_with_registry,
+    register_int_counter_vec_with_registry, register_int_counter_with_registry,
 };
 
 #[derive(Clone)]
@@ -14,6 +14,10 @@ pub struct AppMetrics {
     pub decode_errors: IntCounterVec,
     /// Rows inserted into `package_events` (excludes conflict skips).
     pub rows_inserted: IntCounter,
+    /// Bot reactor handler errors.
+    pub bot_errors: IntCounter,
+    /// Bot event handling latency in milliseconds.
+    pub bot_event_latency_ms: Histogram,
 }
 
 impl AppMetrics {
@@ -33,6 +37,16 @@ impl AppMetrics {
             rows_inserted: register_int_counter_with_registry!(
                 "simple_sui_indexer_package_events_inserted_total",
                 "Rows inserted into package_events (on_conflict do_nothing excluded)",
+                registry,
+            )?,
+            bot_errors: register_int_counter_with_registry!(
+                "simple_sui_indexer_bot_errors_total",
+                "Bot reactor handler errors",
+                registry,
+            )?,
+            bot_event_latency_ms: register_histogram_with_registry!(
+                "simple_sui_indexer_bot_event_latency_ms",
+                "Bot reactor event handling latency in milliseconds",
                 registry,
             )?,
         })

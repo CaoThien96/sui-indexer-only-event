@@ -1,0 +1,1 @@
+CREATE INDEX bot_processed_swaps_created_at_idx ON bot_processed_swaps(created_at);
