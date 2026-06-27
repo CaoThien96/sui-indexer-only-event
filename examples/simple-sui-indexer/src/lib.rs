@@ -9,6 +9,7 @@ pub mod models;
 pub mod prefix;
 pub mod provider;
 pub mod static_event_decode;
+pub mod telegram_format;
 pub mod telegram_notify;
 
 pub mod schema;

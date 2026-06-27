@@ -6,6 +6,7 @@ use tracing::{debug, error, info, warn};
 use crate::bot::config::BotRuntime;
 use crate::bot::state::{BotStateStore, Dex, ParsedSwap, TokenStatus};
 use crate::dex::agg_swap::SwapMode;
+use crate::telegram_format::{format_old_token_swap, format_sell_fail, format_sell_success};
 use crate::telegram_notify;
 
 /// First attempt sells this % of the buy's token amount; each retry drops 1%.
@@ -64,6 +65,18 @@ pub async fn process_swap_old_token(
         .insert_processed_swap(&swap.tx_digest, &swap.event_seq, &swap.pool)
         .await?;
 
+    let vault_addr = runtime.vault.address_string();
+    if token.status == TokenStatus::Done && swap.maker != vault_addr {
+        telegram_notify::send_bot_message(&format_old_token_swap(
+            swap.sui_amount,
+            swap.token_amount,
+            swap.is_buy,
+            &swap.maker,
+            &pool.id,
+        ))
+        .await;
+    }
+
     if !swap.is_buy {
         debug!(
             pool = %swap.pool,
@@ -89,19 +102,12 @@ pub async fn process_swap_old_token(
     let token_type = crate::bot::token_type::normalize_coin_type(&token.id);
     let pool_id = pool.id.clone();
     let dex = pool.dex;
-    let sui_f = swap.sui_amount as f64 / 1e9;
+    let trigger_sui_mist = swap.sui_amount;
     let token_amount = swap.token_amount as u64;
     let mode = sell_mode(swap.sui_amount);
 
     let sell_detected_at = Instant::now();
 
-    telegram_notify::send_message(&format!(
-        "🚀 Try sell old token {} {:.1} SUI ~ {}",
-        symbol, sui_f, swap.token_amount
-    ))
-    .await;
-
-    // Sell can take several seconds on RPC; don't block the reactor semaphore.
     tokio::spawn(async move {
         let queue_ms = sell_detected_at.elapsed().as_millis() as u64;
         if let Err(err) = execute_sell_with_retry(
@@ -111,6 +117,7 @@ pub async fn process_swap_old_token(
             &pool_id,
             &symbol,
             token_amount,
+            trigger_sui_mist,
             mode,
             sell_detected_at,
             queue_ms,
@@ -118,9 +125,12 @@ pub async fn process_swap_old_token(
         .await
         {
             error!(?err, symbol = %symbol, "sell old token failed after retries");
-            telegram_notify::send_message(&format!(
-                "⭕️ Sell old token {} failed after {SELL_RETRY_ATTEMPTS} attempts: {err}",
-                symbol
+            telegram_notify::send_bot_message(&format_sell_fail(
+                &symbol,
+                &pool_id,
+                trigger_sui_mist,
+                SELL_RETRY_ATTEMPTS,
+                &err.to_string(),
             ))
             .await;
         }
@@ -158,6 +168,7 @@ async fn execute_sell_with_retry(
     pool_id: &str,
     symbol: &str,
     token_amount: u64,
+    trigger_sui_mist: u128,
     mode: SwapMode,
     sell_detected_at: Instant,
     spawn_queue_ms: u64,
@@ -215,14 +226,11 @@ async fn execute_sell_with_retry(
                     sell_total_ms,
                     "sell old token timing"
                 );
-                let retry_note = if attempt > 0 {
-                    format!(" ({percent}% on attempt {})", attempt + 1)
-                } else {
-                    String::new()
-                };
-                telegram_notify::send_message(&format!(
-                    "✅ Sold old token {} tx {}{retry_note}",
-                    symbol, digest
+                telegram_notify::send_bot_message(&format_sell_success(
+                    symbol,
+                    pool_id,
+                    &digest,
+                    trigger_sui_mist,
                 ))
                 .await;
                 return Ok(());

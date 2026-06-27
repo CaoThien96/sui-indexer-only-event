@@ -20,8 +20,16 @@ pub fn turbos_create_pool() -> String {
     format!("{TURBOS_PKG}::pool_factory::PoolCreatedEvent")
 }
 
+pub fn cetus_add_liquidity() -> String {
+    format!("{CETUS_PKG}::pool::AddLiquidityEvent")
+}
+
 pub fn cetus_remove_liquidity() -> String {
     format!("{CETUS_PKG}::pool::RemoveLiquidityEvent")
+}
+
+pub fn turbos_mint_liquidity() -> String {
+    format!("{TURBOS_PKG}::pool::MintEvent")
 }
 
 pub fn turbos_remove_liquidity() -> String {

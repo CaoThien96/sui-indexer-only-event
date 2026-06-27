@@ -6,11 +6,13 @@ use tracing::{debug, info};
 
 use crate::bot::cleanup::spawn_processed_swaps_cleanup;
 use crate::bot::config::{BotConfig, BotRuntime};
+use crate::bot::debug_log::agent_log;
 use crate::bot::event_types;
-use crate::bot::parsers::{parse_create_pool, parse_swap};
+use crate::bot::parsers::{find_initial_pool_candidates, parse_swap};
 use crate::bot::sell::process_swap_old_token;
 use crate::bot::snip::schedule_snip;
 use crate::bot::state::{BotStateStore, Dex};
+use crate::telegram_format::format_detect_pool;
 use crate::telegram_notify;
 
 #[derive(Clone, Debug)]
@@ -48,51 +50,143 @@ impl BotReactor {
         })
     }
 
-    pub async fn handle(self: Arc<Self>, ctx: BotEventContext) -> Result<()> {
+    pub async fn handle_transaction(self: Arc<Self>, events: Vec<BotEventContext>) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
         let _permit = self
             .concurrency
             .acquire()
             .await
             .context("bot concurrency permit")?;
-        if self
-            .store
-            .event_exists(&ctx.tx_digest, &ctx.event_seq_str())
-            .await?
-        {
-            return Ok(());
+
+        self.handle_initial_pools(&events).await?;
+
+        for ctx in events {
+            if self
+                .store
+                .event_exists(&ctx.tx_digest, &ctx.event_seq_str())
+                .await?
+            {
+                continue;
+            }
+
+            let dex = match BotRuntime::dex_from_event_type(&ctx.event_type) {
+                Some(d) => d,
+                None => continue,
+            };
+
+            let result = match ctx.event_type.as_str() {
+                t if t == event_types::cetus_swap() || t == event_types::turbos_swap() => {
+                    self.handle_swap(dex, &ctx).await
+                }
+                t if t == event_types::cetus_remove_liquidity()
+                    || t == event_types::turbos_remove_liquidity() =>
+                {
+                    self.handle_remove_liquidity(dex, &ctx).await
+                }
+                _ => Ok(()),
+            };
+
+            if result.is_ok() {
+                self.store
+                    .insert_processed_event(
+                        &ctx.tx_digest,
+                        &ctx.event_seq_str(),
+                        &ctx.event_type,
+                    )
+                    .await?;
+            }
+
+            result?;
         }
 
-        let dex = match BotRuntime::dex_from_event_type(&ctx.event_type) {
-            Some(d) => d,
-            None => return Ok(()),
-        };
+        Ok(())
+    }
 
-        let result = match ctx.event_type.as_str() {
-            t if t == event_types::cetus_swap() || t == event_types::turbos_swap() => {
-                self.handle_swap(dex, &ctx).await
-            }
-            t if t == event_types::cetus_create_pool() || t == event_types::turbos_create_pool() => {
-                self.handle_create_pool(dex, &ctx).await
-            }
-            t if t == event_types::cetus_remove_liquidity()
-                || t == event_types::turbos_remove_liquidity() =>
+    async fn handle_initial_pools(&self, events: &[BotEventContext]) -> Result<()> {
+        let candidates =
+            find_initial_pool_candidates(&self.runtime.rpc, events).await?;
+        let config = &self.runtime.config;
+
+        for candidate in candidates {
+            let create_seq = candidate.create_event_seq.to_string();
+            if self
+                .store
+                .event_exists(&events[0].tx_digest, &create_seq)
+                .await?
             {
-                self.handle_remove_liquidity(dex, &ctx).await
+                continue;
             }
-            _ => Ok(()),
-        };
 
-        if result.is_ok() {
+            if candidate.reserve_sui <= config.min_pool_reserve_sui
+                || config.is_blacklisted(&candidate.token)
+            {
+                agent_log(
+                    "H1",
+                    "reactor.rs:handle_initial_pools:skip",
+                    "skip initial pool reserve/blacklist",
+                    serde_json::json!({
+                        "tx_digest": events[0].tx_digest,
+                        "pool": candidate.pool,
+                        "token": candidate.token,
+                        "reserve_sui": candidate.reserve_sui.to_string(),
+                        "min_pool_reserve_sui": config.min_pool_reserve_sui.to_string(),
+                    }),
+                );
+                debug!(
+                    token = %candidate.token,
+                    reserve = candidate.reserve_sui,
+                    "skip initial pool"
+                );
+                continue;
+            }
+
+            if self.store.token_exists(&candidate.token).await? {
+                continue;
+            }
+
+            let Some(ctx) = events
+                .iter()
+                .find(|e| e.event_seq == candidate.create_event_seq)
+            else {
+                continue;
+            };
+
+            self.try_schedule_snip(
+                candidate.dex,
+                ctx,
+                &candidate.pool,
+                &candidate.token,
+                &candidate.symbol,
+                candidate.reserve_sui,
+                "initial_pool_tx",
+            )
+            .await?;
+
             self.store
                 .insert_processed_event(
                     &ctx.tx_digest,
-                    &ctx.event_seq_str(),
+                    &create_seq,
                     &ctx.event_type,
+                )
+                .await?;
+            let liquidity_event_type = if candidate.dex == Dex::Cetus {
+                event_types::cetus_add_liquidity()
+            } else {
+                event_types::turbos_mint_liquidity()
+            };
+            self.store
+                .insert_processed_event(
+                    &ctx.tx_digest,
+                    &candidate.liquidity_event_seq.to_string(),
+                    &liquidity_event_type,
                 )
                 .await?;
         }
 
-        result
+        Ok(())
     }
 
     async fn handle_swap(&self, dex: Dex, ctx: &BotEventContext) -> Result<()> {
@@ -108,41 +202,52 @@ impl BotReactor {
         process_swap_old_token(Arc::clone(&self.runtime), &self.store, swap).await
     }
 
-    async fn handle_create_pool(&self, dex: Dex, ctx: &BotEventContext) -> Result<()> {
-        let config = &self.runtime.config;
-        let Some(event) = parse_create_pool(&self.runtime.rpc, dex, &ctx.parsed_json).await?
-        else {
-            return Ok(());
-        };
-
-        if event.reserve <= config.min_pool_reserve_sui || config.is_blacklisted(&event.token) {
-            debug!(
-                token = %event.token,
-                reserve = event.reserve,
-                "skip create pool"
-            );
-            return Ok(());
-        }
-
-        if self.store.token_exists(&event.token).await? {
-            return Ok(());
-        }
-
+    async fn try_schedule_snip(
+        &self,
+        dex: Dex,
+        ctx: &BotEventContext,
+        pool: &str,
+        token: &str,
+        symbol: &str,
+        reserve: u128,
+        source: &str,
+    ) -> Result<()> {
         self.store
             .upsert_token_listing(
-                &event.token,
-                &event.symbol,
+                token,
+                symbol,
                 &self.runtime.vault.address_string(),
-                &event.pool,
+                pool,
                 dex,
                 &ctx.tx_digest,
             )
             .await?;
 
-        info!(token = %event.token, pool = %event.pool, dex = ?dex, "detected new pool");
-        telegram_notify::send_message(&format!(
-            "🚀 Detect {} on {:?} added pool {}",
-            event.symbol, dex, event.pool
+        agent_log(
+            "H4",
+            "reactor.rs:try_schedule_snip",
+            "scheduling snip",
+            serde_json::json!({
+                "tx_digest": ctx.tx_digest,
+                "event_seq": ctx.event_seq,
+                "source": source,
+                "pool": pool,
+                "token": token,
+                "symbol": symbol,
+                "reserve": reserve.to_string(),
+            }),
+        );
+
+        info!(
+            token = %token,
+            pool = %pool,
+            dex = ?dex,
+            source,
+            reserve,
+            "detected new pool"
+        );
+        telegram_notify::send_bot_message(&format_detect_pool(
+            symbol, dex, pool, &ctx.tx_digest,
         ))
         .await;
 
@@ -150,9 +255,9 @@ impl BotReactor {
             Arc::clone(&self.runtime),
             Arc::clone(&self.store),
             dex,
-            event.token,
-            event.pool,
-            event.symbol,
+            token.to_string(),
+            pool.to_string(),
+            symbol.to_string(),
         );
 
         Ok(())
@@ -164,7 +269,6 @@ impl BotReactor {
             return Ok(());
         };
 
-        // Only pools we track (same as bot-snip getTokenByPool).
         let Some((_, token)) = self.store.get_pool_with_token(pool_id).await? else {
             return Ok(());
         };

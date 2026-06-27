@@ -7,32 +7,47 @@ use tracing::info;
 use crate::bot::config::BotRuntime;
 use crate::bot::token_type::{normalize_coin_type, parse_type_tag};
 use crate::dex::agg_swap::clock_arg;
-use crate::telegram_notify;
+use crate::telegram_format::format_add_liquidity_fail;
 
 const CETUS_GLOBAL_CONFIG: &str =
     "0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f";
 const CETUS_POOL_SCRIPT: &str =
     "0xb2db7142fa83210a7d78d9c12ac49c043b3cbbd482224fea6e3da00aa5a5ae2d";
 
-pub async fn open_pool_position_with_lp_fixed(runtime: &BotRuntime, pool: &str) -> Result<()> {
+pub async fn open_pool_position_with_lp_fixed(
+    runtime: &BotRuntime,
+    pool: &str,
+    symbol: &str,
+    notify_fail: bool,
+) -> Result<String> {
     let mut attempt = 0;
+    let mut last_err: Option<anyhow::Error> = None;
     while attempt < 3 {
         match try_open(runtime, pool).await {
             Ok(digest) => {
                 info!(digest = %digest, pool = %pool, "cetus lp fixed success");
-                telegram_notify::send_message(&format!("✅ Cetus LP fixed success {digest}")).await;
-                return Ok(());
+                return Ok(digest);
             }
             Err(err) => {
+                last_err = Some(err);
                 attempt += 1;
                 if attempt >= 3 {
-                    return Err(err);
+                    break;
                 }
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
         }
     }
-    Ok(())
+    let err = last_err.unwrap_or_else(|| anyhow::anyhow!("cetus lp failed with no attempts"));
+    if notify_fail {
+        crate::telegram_notify::send_bot_message(&format_add_liquidity_fail(
+            symbol,
+            pool,
+            &err.to_string(),
+        ))
+        .await;
+    }
+    Err(err)
 }
 
 async fn try_open(runtime: &BotRuntime, pool: &str) -> Result<String> {

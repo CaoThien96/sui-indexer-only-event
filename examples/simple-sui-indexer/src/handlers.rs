@@ -63,6 +63,7 @@ impl Processor for EventTypeHandler {
         for (tx_idx, tx) in checkpoint.transactions.iter().enumerate() {
             let tx_digest = tx.transaction.digest().to_string();
             let checkpoint_timestamp_ms = Some(checkpoint.summary.timestamp_ms as i64);
+            let mut tx_bot_events = Vec::new();
 
             if let Some(events) = &tx.events {
                 for (event_idx, event) in events.data.iter().enumerate() {
@@ -100,27 +101,15 @@ impl Processor for EventTypeHandler {
                         }
                     };
 
-                    if let (Some(reactor), Some(parsed)) =
+                    if let (Some(_reactor), Some(parsed)) =
                         (self.bot_reactor.as_ref(), parsed_json.clone())
                     {
-                        let ctx = BotEventContext {
+                        tx_bot_events.push(BotEventContext {
                             event_type: event_type_str.clone(),
                             tx_digest: tx_digest.clone(),
                             event_seq: event_idx,
                             sender: event.sender.to_string(),
                             parsed_json: parsed,
-                        };
-                        let reactor = Arc::clone(reactor);
-                        let metrics = Arc::clone(&self.app_metrics);
-                        tokio::spawn(async move {
-                            let start = std::time::Instant::now();
-                            if let Err(err) = reactor.handle(ctx).await {
-                                tracing::error!(?err, "bot reactor error");
-                                metrics.bot_errors.inc();
-                            }
-                            metrics
-                                .bot_event_latency_ms
-                                .observe(start.elapsed().as_millis() as f64);
                         });
                     }
 
@@ -138,6 +127,23 @@ impl Processor for EventTypeHandler {
                         bcs: event.contents.clone(),
                         json: serde_json::to_value(event).unwrap_or(Value::Null),
                         parsed_json,
+                    });
+                }
+            }
+
+            if let Some(reactor) = self.bot_reactor.as_ref() {
+                if !tx_bot_events.is_empty() {
+                    let reactor = Arc::clone(reactor);
+                    let metrics = Arc::clone(&self.app_metrics);
+                    tokio::spawn(async move {
+                        let start = std::time::Instant::now();
+                        if let Err(err) = reactor.handle_transaction(tx_bot_events).await {
+                            tracing::error!(?err, "bot reactor error");
+                            metrics.bot_errors.inc();
+                        }
+                        metrics
+                            .bot_event_latency_ms
+                            .observe(start.elapsed().as_millis() as f64);
                     });
                 }
             }

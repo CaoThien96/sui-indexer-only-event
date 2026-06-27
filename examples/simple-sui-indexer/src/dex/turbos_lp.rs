@@ -6,35 +6,50 @@ use sui_types::transaction::{Argument, Command, ObjectArg, TransactionData};
 use tracing::{info, warn};
 
 use crate::bot::config::BotRuntime;
-use crate::bot::token_type::{normalize_coin_type, parse_type_tag};
+use crate::bot::token_type::parse_type_tag;
 use crate::dex::agg_swap::clock_arg;
 use crate::dex::turbos_contract::{self, MINT_DEADLINE_MS};
 use crate::dex::turbos_math;
-use crate::telegram_notify;
+use crate::telegram_format::format_add_liquidity_fail;
 
 const SUI_TYPE: &str = "0x2::sui::SUI";
 const SLIPPAGE_PERCENT: u64 = 5;
 
-pub async fn open_pool_position_with_lp_fixed(runtime: &BotRuntime, pool: &str) -> Result<()> {
+pub async fn open_pool_position_with_lp_fixed(
+    runtime: &BotRuntime,
+    pool: &str,
+    symbol: &str,
+    notify_fail: bool,
+) -> Result<String> {
     let mut attempt = 0;
+    let mut last_err: Option<anyhow::Error> = None;
     while attempt < 3 {
         match try_open(runtime, pool).await {
             Ok(digest) => {
                 info!(digest = %digest, pool = %pool, "turbos lp fixed success");
-                telegram_notify::send_message(&format!("✅ Turbos LP fixed success {digest}")).await;
-                return Ok(());
+                return Ok(digest);
             }
             Err(err) => {
+                warn!(?err, pool = %pool, attempt, "turbos lp fixed retry");
+                last_err = Some(err);
                 attempt += 1;
                 if attempt >= 3 {
-                    return Err(err);
+                    break;
                 }
-                warn!(?err, pool = %pool, attempt, "turbos lp fixed retry");
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
         }
     }
-    Ok(())
+    let err = last_err.unwrap_or_else(|| anyhow::anyhow!("turbos lp failed with no attempts"));
+    if notify_fail {
+        crate::telegram_notify::send_bot_message(&format_add_liquidity_fail(
+            symbol,
+            pool,
+            &err.to_string(),
+        ))
+        .await;
+    }
+    Err(err)
 }
 
 async fn try_open(runtime: &BotRuntime, pool: &str) -> Result<String> {
@@ -57,8 +72,6 @@ async fn try_open(runtime: &BotRuntime, pool: &str) -> Result<String> {
 
     let mut ptb = ProgrammableTransactionBuilder::new();
 
-    // On-chain successful mint PTB order:
-    //   SplitCoins(SUI) → MakeMoveVec(coin_a) → MakeMoveVec(coin_b from split)
     let pending_sui_split = if coin_type_b == SUI_TYPE && amount_b > 0 {
         let amt = ptb.pure(amount_b)?;
         Some(ptb.command(Command::SplitCoins(Argument::GasCoin, vec![amt])))

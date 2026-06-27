@@ -82,7 +82,7 @@ impl TelegramNotifier {
         }
     }
 
-    async fn send_message(&self, text: &str) -> Result<()> {
+    async fn send_html_message(&self, text: &str) -> Result<()> {
         let url = format!("{TELEGRAM_API_BASE}/bot{}/sendMessage", self.bot_token);
         let response = self
             .client
@@ -91,6 +91,30 @@ impl TelegramNotifier {
                 "chat_id": self.chat_id,
                 "text": text,
                 "parse_mode": "HTML",
+                "disable_web_page_preview": true,
+            }))
+            .send()
+            .await
+            .context("telegram sendMessage request failed")?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            anyhow::bail!("telegram sendMessage returned {status}: {body}");
+        }
+
+        Ok(())
+    }
+
+    async fn send_markdown_message(&self, text: &str) -> Result<()> {
+        let url = format!("{TELEGRAM_API_BASE}/bot{}/sendMessage", self.bot_token);
+        let response = self
+            .client
+            .post(url)
+            .json(&serde_json::json!({
+                "chat_id": self.chat_id,
+                "text": text,
+                "parse_mode": "Markdown",
                 "disable_web_page_preview": true,
             }))
             .send()
@@ -159,7 +183,7 @@ pub async fn notify_processor_error(
         escape_html(error),
     );
 
-    if let Err(send_error) = notifier.send_message(&message).await {
+    if let Err(send_error) = notifier.send_html_message(&message).await {
         notifier.rollback_notify(&dedup_key);
         warn!(
             error = %send_error,
@@ -170,14 +194,19 @@ pub async fn notify_processor_error(
     }
 }
 
-/// Send a bot alert message (snip/sell/state). No cooldown dedup.
-pub async fn send_message(text: &str) {
+/// Send a bot alert with Markdown links (snip/sell/detect). No cooldown dedup.
+pub async fn send_bot_message(text: &str) {
     let Some(notifier) = notifier() else {
         return;
     };
-    if let Err(send_error) = notifier.send_message(text).await {
+    if let Err(send_error) = notifier.send_markdown_message(text).await {
         warn!(error = %send_error, "Failed to send Telegram bot alert");
     }
+}
+
+/// Alias for [`send_bot_message`].
+pub async fn send_message(text: &str) {
+    send_bot_message(text).await;
 }
 
 #[cfg(test)]
