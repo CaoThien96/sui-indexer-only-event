@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use simple_sui_indexer::bootstrap;
+use simple_sui_indexer::bot::event_id::format_event_id;
 use std::env;
 use tokio_postgres::{Client, NoTls};
 
@@ -114,16 +115,16 @@ async fn main() -> Result<()> {
             .context("query swaps from bot-snip")?;
 
         for row in swap_rows {
-            let id: String = row.get(0);
             let pool_id: String = row.get(1);
             let tx_digest: String = row.get(2);
             let event_seq: String = row.get(3);
+            let id = format_event_id(&tx_digest, &event_seq);
             let inserted = target
                 .execute(
                     r#"
                     INSERT INTO bot_processed_swaps (id, pool_id, tx_digest, event_seq)
                     VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (id) DO NOTHING
+                    ON CONFLICT (tx_digest, event_seq) DO NOTHING
                     "#,
                     &[&id, &pool_id, &tx_digest, &event_seq],
                 )

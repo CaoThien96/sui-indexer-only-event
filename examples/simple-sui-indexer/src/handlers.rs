@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use base64::Engine;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -104,15 +103,12 @@ impl Processor for EventTypeHandler {
                     if let (Some(reactor), Some(parsed)) =
                         (self.bot_reactor.as_ref(), parsed_json.clone())
                     {
-                        let event_bcs_id = base64::engine::general_purpose::STANDARD
-                            .encode(&event.contents);
                         let ctx = BotEventContext {
                             event_type: event_type_str.clone(),
                             tx_digest: tx_digest.clone(),
                             event_seq: event_idx,
                             sender: event.sender.to_string(),
                             parsed_json: parsed,
-                            event_bcs_id,
                         };
                         let reactor = Arc::clone(reactor);
                         let metrics = Arc::clone(&self.app_metrics);

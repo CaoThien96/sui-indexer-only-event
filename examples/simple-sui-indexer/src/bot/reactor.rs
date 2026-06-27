@@ -20,7 +20,12 @@ pub struct BotEventContext {
     pub event_seq: usize,
     pub sender: String,
     pub parsed_json: Value,
-    pub event_bcs_id: String,
+}
+
+impl BotEventContext {
+    pub fn event_seq_str(&self) -> String {
+        self.event_seq.to_string()
+    }
 }
 
 pub struct BotReactor {
@@ -49,7 +54,11 @@ impl BotReactor {
             .acquire()
             .await
             .context("bot concurrency permit")?;
-        if self.store.event_exists(&ctx.event_bcs_id).await? {
+        if self
+            .store
+            .event_exists(&ctx.tx_digest, &ctx.event_seq_str())
+            .await?
+        {
             return Ok(());
         }
 
@@ -76,10 +85,9 @@ impl BotReactor {
         if result.is_ok() {
             self.store
                 .insert_processed_event(
-                    &ctx.event_bcs_id,
-                    &ctx.event_type,
                     &ctx.tx_digest,
-                    &ctx.event_seq.to_string(),
+                    &ctx.event_seq_str(),
+                    &ctx.event_type,
                 )
                 .await?;
         }
@@ -91,9 +99,8 @@ impl BotReactor {
         let Some(swap) = parse_swap(
             dex,
             &ctx.parsed_json,
-            &ctx.event_bcs_id,
             &ctx.tx_digest,
-            &ctx.event_seq.to_string(),
+            &ctx.event_seq_str(),
             &ctx.sender,
         )? else {
             return Ok(());

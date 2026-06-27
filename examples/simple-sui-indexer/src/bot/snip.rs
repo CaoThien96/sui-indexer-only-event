@@ -75,10 +75,11 @@ pub async fn run_snip(
                 buy_amount,
                 false,
                 SwapMode::Safe,
+                None,
             )
             .await
         {
-            Ok(digest) => {
+            Ok((digest, _)) => {
                 info!(digest = %digest, symbol = %symbol, "snip buy submitted");
                 telegram_notify::send_message(&format!("⚡️ Snip {symbol} success {digest}")).await;
             }

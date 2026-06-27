@@ -1,19 +1,32 @@
 use anyhow::Result;
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use std::time::Instant;
+use tracing::{debug, error, info, warn};
 
 use crate::bot::config::BotRuntime;
 use crate::bot::state::{BotStateStore, Dex, ParsedSwap, TokenStatus};
 use crate::dex::agg_swap::SwapMode;
 use crate::telegram_notify;
 
+/// First attempt sells this % of the buy's token amount; each retry drops 1%.
+const SELL_RETRY_START_PERCENT: u64 = 99;
+const SELL_RETRY_ATTEMPTS: usize = 5;
+
 pub async fn process_swap_old_token(
     runtime: Arc<BotRuntime>,
     store: &BotStateStore,
     swap: ParsedSwap,
 ) -> Result<()> {
-    if store.swap_exists(&swap.event_id).await? {
-        debug!(pool = %swap.pool, "skip old token swap: already processed");
+    if store
+        .swap_exists(&swap.tx_digest, &swap.event_seq)
+        .await?
+    {
+        debug!(
+            pool = %swap.pool,
+            tx_digest = %swap.tx_digest,
+            event_seq = %swap.event_seq,
+            "skip old token swap: already processed"
+        );
         return Ok(());
     }
 
@@ -48,12 +61,7 @@ pub async fn process_swap_old_token(
     );
 
     store
-        .insert_processed_swap(
-            &swap.event_id,
-            &swap.pool,
-            &swap.tx_digest,
-            &swap.event_seq,
-        )
+        .insert_processed_swap(&swap.tx_digest, &swap.event_seq, &swap.pool)
         .await?;
 
     if !swap.is_buy {
@@ -85,6 +93,8 @@ pub async fn process_swap_old_token(
     let token_amount = swap.token_amount as u64;
     let mode = sell_mode(swap.sui_amount);
 
+    let sell_detected_at = Instant::now();
+
     telegram_notify::send_message(&format!(
         "🚀 Try sell old token {} {:.1} SUI ~ {}",
         symbol, sui_f, swap.token_amount
@@ -93,12 +103,23 @@ pub async fn process_swap_old_token(
 
     // Sell can take several seconds on RPC; don't block the reactor semaphore.
     tokio::spawn(async move {
-        if let Err(err) =
-            execute_sell(&runtime, dex, &token_type, &pool_id, &symbol, token_amount, mode).await
+        let queue_ms = sell_detected_at.elapsed().as_millis() as u64;
+        if let Err(err) = execute_sell_with_retry(
+            &runtime,
+            dex,
+            &token_type,
+            &pool_id,
+            &symbol,
+            token_amount,
+            mode,
+            sell_detected_at,
+            queue_ms,
+        )
+        .await
         {
-            error!(?err, symbol = %symbol, "sell old token failed");
+            error!(?err, symbol = %symbol, "sell old token failed after retries");
             telegram_notify::send_message(&format!(
-                "⭕️ Sell old token {} failed: {err}",
+                "⭕️ Sell old token {} failed after {SELL_RETRY_ATTEMPTS} attempts: {err}",
                 symbol
             ))
             .await;
@@ -109,16 +130,28 @@ pub async fn process_swap_old_token(
 }
 
 fn sell_mode(sui_amount: u128) -> SwapMode {
-    if sui_amount >= 20_000_000_000 {
+    if sui_amount >= 10_000_000_000 {
         SwapMode::Superfast
-    } else if sui_amount >= 10_000_000_000 {
+    } else if sui_amount >= 5_000_000_000 {
         SwapMode::Fast
     } else {
         SwapMode::Safe
     }
 }
 
-async fn execute_sell(
+fn sell_amount_for_attempt(full_amount: u64, attempt: usize) -> Option<(u64, u64)> {
+    let percent = SELL_RETRY_START_PERCENT.saturating_sub(attempt as u64);
+    if percent == 0 {
+        return None;
+    }
+    let amount = full_amount.saturating_mul(percent) / 100;
+    if amount == 0 {
+        return None;
+    }
+    Some((amount, percent))
+}
+
+async fn execute_sell_with_retry(
     runtime: &BotRuntime,
     dex: Dex,
     token_type: &str,
@@ -126,21 +159,102 @@ async fn execute_sell(
     symbol: &str,
     token_amount: u64,
     mode: SwapMode,
+    sell_detected_at: Instant,
+    spawn_queue_ms: u64,
 ) -> Result<()> {
-    match runtime
-        .agg
-        .swap_exact_amount(dex, true, token_type, pool_id, token_amount, true, mode)
-        .await
-    {
-        Ok(digest) => {
-            info!(digest = %digest, symbol = %symbol, "sell old token submitted");
-            telegram_notify::send_message(&format!(
-                "✅ Sold old token {} tx {}",
-                symbol, digest
-            ))
-            .await;
-            Ok(())
+    let mut last_err: Option<anyhow::Error> = None;
+
+    for attempt in 0..SELL_RETRY_ATTEMPTS {
+        let Some((amount, percent)) = sell_amount_for_attempt(token_amount, attempt) else {
+            warn!(
+                symbol = %symbol,
+                attempt = attempt + 1,
+                token_amount,
+                "sell retry skipped: amount rounds to zero"
+            );
+            continue;
+        };
+
+        info!(
+            symbol = %symbol,
+            attempt = attempt + 1,
+            max_attempts = SELL_RETRY_ATTEMPTS,
+            percent,
+            amount,
+            spawn_queue_ms,
+            detect_elapsed_ms = sell_detected_at.elapsed().as_millis() as u64,
+            "sell old token attempt"
+        );
+
+        match runtime
+            .agg
+            .swap_exact_amount(
+                dex,
+                true,
+                token_type,
+                pool_id,
+                amount,
+                true,
+                mode,
+                Some(sell_detected_at),
+            )
+            .await
+        {
+            Ok((digest, metrics)) => {
+                let sell_total_ms = sell_detected_at.elapsed().as_millis() as u64;
+                info!(
+                    digest = %digest,
+                    symbol = %symbol,
+                    percent,
+                    attempt = attempt + 1,
+                    spawn_queue_ms,
+                    detect_to_build_ms = ?metrics.detect_to_build_ms,
+                    build_ms = metrics.build_ms,
+                    submit_at = %metrics.submit_at,
+                    confirm_ms = metrics.confirm_ms,
+                    sell_total_ms,
+                    "sell old token timing"
+                );
+                let retry_note = if attempt > 0 {
+                    format!(" ({percent}% on attempt {})", attempt + 1)
+                } else {
+                    String::new()
+                };
+                telegram_notify::send_message(&format!(
+                    "✅ Sold old token {} tx {}{retry_note}",
+                    symbol, digest
+                ))
+                .await;
+                return Ok(());
+            }
+            Err(err) => {
+                warn!(
+                    ?err,
+                    symbol = %symbol,
+                    attempt = attempt + 1,
+                    percent,
+                    amount,
+                    detect_elapsed_ms = sell_detected_at.elapsed().as_millis() as u64,
+                    "sell old token attempt failed"
+                );
+                last_err = Some(err);
+            }
         }
-        Err(err) => Err(err),
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("sell failed with no attempts")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sell_amount_steps_down_by_one_percent() {
+        let full = 1_000_000_000u64;
+        assert_eq!(sell_amount_for_attempt(full, 0), Some((990_000_000, 99)));
+        assert_eq!(sell_amount_for_attempt(full, 1), Some((980_000_000, 98)));
+        assert_eq!(sell_amount_for_attempt(full, 4), Some((950_000_000, 95)));
+        assert!(sell_amount_for_attempt(full, 5).is_none());
     }
 }

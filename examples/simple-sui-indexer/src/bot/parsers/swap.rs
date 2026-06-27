@@ -1,12 +1,12 @@
 use anyhow::Result;
 use serde_json::Value;
 
+use crate::bot::event_id::format_event_id;
 use crate::bot::state::{Dex, ParsedSwap};
 
 pub fn parse_swap(
     dex: Dex,
     parsed_json: &Value,
-    event_id: &str,
     tx_digest: &str,
     event_seq: &str,
     maker: &str,
@@ -42,7 +42,7 @@ pub fn parse_swap(
     };
 
     Ok(Some(ParsedSwap {
-        event_id: event_id.to_string(),
+        event_id: format_event_id(tx_digest, event_seq),
         tx_digest: tx_digest.to_string(),
         event_seq: event_seq.to_string(),
         pool,

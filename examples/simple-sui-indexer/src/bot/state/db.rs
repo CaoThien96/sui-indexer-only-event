@@ -4,6 +4,7 @@ use tokio::sync::Mutex;
 use tokio_postgres::Client;
 
 use super::models::{BotPool, BotToken, Dex, TokenStatus};
+use crate::bot::event_id::format_event_id;
 
 pub struct BotStateStore {
     client: Arc<Mutex<Client>>,
@@ -29,12 +30,12 @@ impl BotStateStore {
         self.client.lock().await
     }
 
-    pub async fn event_exists(&self, event_id: &str) -> Result<bool> {
+    pub async fn event_exists(&self, tx_digest: &str, event_seq: &str) -> Result<bool> {
         let client = self.client().await;
         let row = client
             .query_opt(
-                "SELECT 1 FROM bot_processed_events WHERE id = $1",
-                &[&event_id],
+                "SELECT 1 FROM bot_processed_events WHERE tx_digest = $1 AND event_seq = $2",
+                &[&tx_digest, &event_seq],
             )
             .await?;
         Ok(row.is_some())
@@ -42,28 +43,29 @@ impl BotStateStore {
 
     pub async fn insert_processed_event(
         &self,
-        event_id: &str,
+        tx_digest: &str,
+        event_seq: &str,
         event_type_str: &str,
-        tx_digest_str: &str,
-        event_seq_str: &str,
     ) -> Result<()> {
+        let id = format_event_id(tx_digest, event_seq);
         let client = self.client().await;
         client
             .execute(
                 "INSERT INTO bot_processed_events (id, event_type, tx_digest, event_seq)
-                 VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING",
-                &[&event_id, &event_type_str, &tx_digest_str, &event_seq_str],
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (tx_digest, event_seq) DO NOTHING",
+                &[&id, &event_type_str, &tx_digest, &event_seq],
             )
             .await?;
         Ok(())
     }
 
-    pub async fn swap_exists(&self, swap_id: &str) -> Result<bool> {
+    pub async fn swap_exists(&self, tx_digest: &str, event_seq: &str) -> Result<bool> {
         let client = self.client().await;
         let row = client
             .query_opt(
-                "SELECT 1 FROM bot_processed_swaps WHERE id = $1",
-                &[&swap_id],
+                "SELECT 1 FROM bot_processed_swaps WHERE tx_digest = $1 AND event_seq = $2",
+                &[&tx_digest, &event_seq],
             )
             .await?;
         Ok(row.is_some())
@@ -82,17 +84,18 @@ impl BotStateStore {
 
     pub async fn insert_processed_swap(
         &self,
-        swap_id: &str,
+        tx_digest: &str,
+        event_seq: &str,
         pool_id_str: &str,
-        tx_digest_str: &str,
-        event_seq_str: &str,
     ) -> Result<()> {
+        let id = format_event_id(tx_digest, event_seq);
         let client = self.client().await;
         client
             .execute(
                 "INSERT INTO bot_processed_swaps (id, pool_id, tx_digest, event_seq)
-                 VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING",
-                &[&swap_id, &pool_id_str, &tx_digest_str, &event_seq_str],
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (tx_digest, event_seq) DO NOTHING",
+                &[&id, &pool_id_str, &tx_digest, &event_seq],
             )
             .await?;
         Ok(())

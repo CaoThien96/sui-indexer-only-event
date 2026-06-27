@@ -1,5 +1,6 @@
 pub mod cleanup;
 pub mod config;
+pub mod event_id;
 pub mod event_types;
 pub mod parsers;
 pub mod reactor;
