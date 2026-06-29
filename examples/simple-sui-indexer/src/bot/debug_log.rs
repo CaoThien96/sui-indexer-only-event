@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const DEBUG_LOG_PATH: &str = "/Users/thiencao/bot-snip/.cursor/debug-d27706.log";
+const DEBUG_LOG_PATH: &str = "/Users/thiencao/bot-snip/.cursor/debug-e5af38.log";
 
 pub fn agent_log(hypothesis_id: &str, location: &str, message: &str, data: serde_json::Value) {
     let timestamp = SystemTime::now()
@@ -9,7 +9,7 @@ pub fn agent_log(hypothesis_id: &str, location: &str, message: &str, data: serde
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let line = serde_json::json!({
-        "sessionId": "d27706",
+        "sessionId": "e5af38",
         "hypothesisId": hypothesis_id,
         "location": location,
         "message": message,

@@ -16,12 +16,17 @@ use crate::telegram_format::{
 };
 use crate::telegram_notify;
 
+// #region agent log
+use crate::bot::debug_log::agent_log;
+// #endregion
+
 #[derive(Debug, Clone, Default)]
 pub struct SnipRunOptions {
     pub skip_buy: bool,
     pub skip_lp: bool,
     pub buy_amount: Option<u64>,
     pub lp_wait_ms: Option<u64>,
+    pub dry_run: bool,
 }
 
 #[derive(Debug)]
@@ -50,7 +55,7 @@ impl std::error::Error for SnipFailure {
 
 pub fn schedule_snip(
     runtime: Arc<BotRuntime>,
-    _store: Arc<BotStateStore>,
+    store: Arc<BotStateStore>,
     dex: Dex,
     token: String,
     pool: String,
@@ -63,8 +68,16 @@ pub fn schedule_snip(
 
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-        if let Err(failure) =
-            run_snip(&runtime, dex, &token, &pool, &symbol, SnipRunOptions::default()).await
+        if let Err(failure) = run_snip(
+            &runtime,
+            Some(store.as_ref()),
+            dex,
+            &token,
+            &pool,
+            &symbol,
+            SnipRunOptions::default(),
+        )
+        .await
         {
             match &failure {
                 SnipFailure::Buy(err) => {
@@ -92,6 +105,7 @@ pub fn schedule_snip(
 
 pub async fn run_snip(
     runtime: &BotRuntime,
+    store: Option<&BotStateStore>,
     dex: Dex,
     token: &str,
     pool: &str,
@@ -105,6 +119,75 @@ pub async fn run_snip(
     let lp_wait_ms = options
         .lp_wait_ms
         .unwrap_or(runtime.config.snip_lp_wait_ms);
+
+    if !options.skip_buy
+        && !options.skip_lp
+        && let Some(vault) = &runtime.snip_vault
+    {
+        // #region agent log
+        agent_log(
+            "H5",
+            "snip.rs:run_snip",
+            "vault snip path",
+            serde_json::json!({
+                "dry_run": options.dry_run,
+                "buy_amount": buy_amount,
+                "dex": format!("{:?}", dex),
+            }),
+        );
+        // #endregion
+        match vault
+            .snip_and_lp(runtime, store, dex, &token, pool, buy_amount, options.dry_run)
+            .await
+        {
+            Ok(digest) => {
+                info!(digest = %digest, symbol = %symbol, dry_run = options.dry_run, "snip vault buy+lp submitted");
+                if !options.dry_run {
+                    telegram_notify::send_bot_message(&format_snip_success(symbol, dex, &digest))
+                        .await;
+                    telegram_notify::send_bot_message(&format_add_liquidity_success(symbol, &digest))
+                        .await;
+                }
+                return Ok(());
+            }
+            Err(err) if runtime.config.snip_vault_fallback_agg && !options.dry_run => {
+                warn!(
+                    ?err,
+                    symbol = %symbol,
+                    "snip vault buy+lp failed, falling back to agg_swap + LP"
+                );
+            }
+            Err(err) => {
+                // #region agent log
+                agent_log(
+                    "H1",
+                    "snip.rs:run_snip",
+                    "vault snip failed",
+                    serde_json::json!({
+                        "error": err.to_string(),
+                        "dry_run": options.dry_run,
+                    }),
+                );
+                // #endregion
+                warn!(?err, symbol = %symbol, "snip vault buy+lp failed");
+                return Err(SnipFailure::Buy(err));
+            }
+        }
+    }
+
+    // #region agent log
+    agent_log(
+        "H5",
+        "snip.rs:run_snip",
+        "agg_swap path",
+        serde_json::json!({
+            "dry_run": options.dry_run,
+            "skip_buy": options.skip_buy,
+            "skip_lp": options.skip_lp,
+            "has_vault": runtime.snip_vault.is_some(),
+        }),
+    );
+    // #endregion
 
     let mut buy_digest: Option<String> = None;
 
@@ -120,12 +203,16 @@ pub async fn run_snip(
                 false,
                 SwapMode::Safe,
                 None,
+                options.dry_run,
             )
             .await
         {
             Ok((digest, _)) => {
-                info!(digest = %digest, symbol = %symbol, "snip buy submitted");
-                telegram_notify::send_bot_message(&format_snip_success(symbol, dex, &digest)).await;
+                info!(digest = %digest, symbol = %symbol, dry_run = options.dry_run, "snip buy submitted");
+                if !options.dry_run {
+                    telegram_notify::send_bot_message(&format_snip_success(symbol, dex, &digest))
+                        .await;
+                }
                 buy_digest = Some(digest);
             }
             Err(err) => {
@@ -142,24 +229,43 @@ pub async fn run_snip(
         return Ok(());
     }
 
-    if lp_wait_ms > 0 {
+    if lp_wait_ms > 0 && !options.dry_run {
         tokio::time::sleep(Duration::from_millis(lp_wait_ms)).await;
     }
 
-    info!(symbol = %symbol, pool = %pool, dex = ?dex, "snip add liquidity starting");
-    let notify_lp_fail = options.skip_buy;
+    info!(symbol = %symbol, pool = %pool, dex = ?dex, dry_run = options.dry_run, "snip add liquidity starting");
+    let notify_lp_fail = options.skip_buy && !options.dry_run;
     let lp_result = match dex {
         Dex::Cetus => {
-            cetus_lp::open_pool_position_with_lp_fixed(runtime, pool, symbol, notify_lp_fail).await
+            cetus_lp::open_pool_position_with_lp_fixed(
+                runtime,
+                store,
+                pool,
+                symbol,
+                notify_lp_fail,
+                options.dry_run,
+            )
+            .await
         }
         Dex::Turbos => {
-            turbos_lp::open_pool_position_with_lp_fixed(runtime, pool, symbol, notify_lp_fail).await
+            turbos_lp::open_pool_position_with_lp_fixed(
+                runtime,
+                store,
+                pool,
+                symbol,
+                notify_lp_fail,
+                options.dry_run,
+            )
+            .await
         }
     };
 
     match lp_result {
         Ok(digest) => {
-            telegram_notify::send_bot_message(&format_add_liquidity_success(symbol, &digest)).await;
+            if !options.dry_run {
+                telegram_notify::send_bot_message(&format_add_liquidity_success(symbol, &digest))
+                    .await;
+            }
             Ok(())
         }
         Err(err) => {

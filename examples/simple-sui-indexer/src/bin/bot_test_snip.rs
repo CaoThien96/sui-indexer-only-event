@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use clap::Parser;
 use simple_sui_indexer::bot::config::BotRuntime;
 use simple_sui_indexer::bot::snip::{run_snip, SnipRunOptions};
-use simple_sui_indexer::bot::state::Dex;
+use simple_sui_indexer::bot::state::{BotStateStore, Dex};
 use simple_sui_indexer::bootstrap;
 
 const VALORA_POOL: &str =
@@ -58,6 +58,9 @@ struct Args {
     /// Wait before LP step (default: `SNIP_LP_WAIT_MS` or 0 with `--lp-only`).
     #[arg(long)]
     lp_wait_ms: Option<u64>,
+
+    #[arg(long)]
+    dry_run: bool,
 }
 
 fn parse_dex(s: &str) -> Result<Dex> {
@@ -103,8 +106,15 @@ async fn main() -> Result<()> {
 
     let lp_wait_ms = args.lp_wait_ms.or(if args.lp_only { Some(0) } else { None });
 
+    let store = if let Ok(url) = std::env::var("DATABASE_URL") {
+        Some(BotStateStore::connect(&url).await?)
+    } else {
+        None
+    };
+
     run_snip(
         &runtime,
+        store.as_ref(),
         args.dex,
         &token,
         &pool,
@@ -114,6 +124,7 @@ async fn main() -> Result<()> {
             skip_lp: args.buy_only,
             buy_amount: args.buy_amount,
             lp_wait_ms,
+            dry_run: args.dry_run,
         },
     )
     .await?;

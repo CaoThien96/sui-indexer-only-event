@@ -196,4 +196,45 @@ impl BotStateStore {
             .await?;
         Ok(())
     }
+
+    pub async fn get_pool_shared_initial_version(&self, pool_id: &str) -> Result<Option<u64>> {
+        let client = self.client().await;
+        let row = client
+            .query_opt(
+                "SELECT initial_shared_version FROM bot_pools WHERE id = $1",
+                &[&pool_id],
+            )
+            .await?;
+        Ok(row.and_then(|r| {
+            r.get::<_, Option<i64>>(0)
+                .and_then(|v| u64::try_from(v).ok())
+        }))
+    }
+
+    pub async fn set_pool_shared_initial_version(
+        &self,
+        pool_id: &str,
+        initial_shared_version: u64,
+    ) -> Result<()> {
+        let version_i64 = i64::try_from(initial_shared_version).context("version exceeds i64")?;
+        let client = self.client().await;
+        client
+            .execute(
+                "UPDATE bot_pools SET initial_shared_version = $2, updated_at = NOW() WHERE id = $1",
+                &[&pool_id, &version_i64],
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn list_pools_missing_shared_version(&self) -> Result<Vec<String>> {
+        let client = self.client().await;
+        let rows = client
+            .query(
+                "SELECT id FROM bot_pools WHERE initial_shared_version IS NULL ORDER BY created_at",
+                &[],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
 }

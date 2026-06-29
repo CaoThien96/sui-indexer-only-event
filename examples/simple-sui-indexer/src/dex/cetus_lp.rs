@@ -5,6 +5,8 @@ use sui_types::transaction::{Argument, Command, ObjectArg, TransactionData};
 use tracing::info;
 
 use crate::bot::config::BotRuntime;
+use crate::bot::pool_shared::persist_pool_shared_version;
+use crate::bot::state::BotStateStore;
 use crate::bot::token_type::{normalize_coin_type, parse_type_tag};
 use crate::dex::agg_swap::clock_arg;
 use crate::telegram_format::format_add_liquidity_fail;
@@ -16,14 +18,17 @@ const CETUS_POOL_SCRIPT: &str =
 
 pub async fn open_pool_position_with_lp_fixed(
     runtime: &BotRuntime,
+    store: Option<&BotStateStore>,
     pool: &str,
     symbol: &str,
     notify_fail: bool,
+    dry_run: bool,
 ) -> Result<String> {
     let mut attempt = 0;
     let mut last_err: Option<anyhow::Error> = None;
-    while attempt < 3 {
-        match try_open(runtime, pool).await {
+    let max_attempts = if dry_run { 1 } else { 3 };
+    while attempt < max_attempts {
+        match try_open(runtime, store, pool, dry_run).await {
             Ok(digest) => {
                 info!(digest = %digest, pool = %pool, "cetus lp fixed success");
                 return Ok(digest);
@@ -50,7 +55,12 @@ pub async fn open_pool_position_with_lp_fixed(
     Err(err)
 }
 
-async fn try_open(runtime: &BotRuntime, pool: &str) -> Result<String> {
+async fn try_open(
+    runtime: &BotRuntime,
+    store: Option<&BotStateStore>,
+    pool: &str,
+    dry_run: bool,
+) -> Result<String> {
     let rpc = &runtime.rpc;
     let vault = &runtime.vault;
     let sender = vault.address();
@@ -66,7 +76,9 @@ async fn try_open(runtime: &BotRuntime, pool: &str) -> Result<String> {
     let amount_a = 1_000_000_000u64;
 
     let global = ptb.obj(rpc.object_arg(CETUS_GLOBAL_CONFIG, false).await?)?;
-    let pool_obj = ptb.obj(rpc.object_arg(pool, true).await?)?;
+    let pool_raw = rpc.object_arg(pool, true).await?;
+    persist_pool_shared_version(store, pool, &pool_raw).await?;
+    let pool_obj = ptb.obj(pool_raw)?;
     let lower = ptb.pure(lower_tick)?;
     let upper = ptb.pure(upper_tick)?;
     let amount_a_arg = ptb.pure(amount_a)?;
@@ -97,7 +109,7 @@ async fn try_open(runtime: &BotRuntime, pool: &str) -> Result<String> {
     let gas_price = rpc.get_reference_gas_price().await?;
     let tx_data = TransactionData::new_programmable(sender, vec![gas], ptb.finish(), 200_000_000, gas_price);
     let sig = vault.sign_transaction(&tx_data);
-    rpc.execute_transaction(tx_data, sig).await
+    rpc.execute_or_dry_run(tx_data, sig, dry_run, None).await
 }
 
 async fn take_coin(

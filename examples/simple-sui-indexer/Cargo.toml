@@ -27,8 +27,28 @@ name = "migrate-removed-tokens"
 path = "src/bin/migrate_removed_tokens.rs"
 
 [[bin]]
+name = "backfill-pool-shared-version"
+path = "src/bin/backfill_pool_shared_version.rs"
+
+[[bin]]
 name = "bot-test-snip"
 path = "src/bin/bot_test_snip.rs"
+
+[[bin]]
+name = "bot-snip"
+path = "src/bin/bot_snip.rs"
+
+[[bin]]
+name = "bot-sell"
+path = "src/bin/bot_sell.rs"
+
+[[bin]]
+name = "vault-deposit"
+path = "src/bin/vault_deposit.rs"
+
+[[bin]]
+name = "vault-withdraw"
+path = "src/bin/vault_withdraw.rs"
 
 [dependencies]
 sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", branch = "mainnet" }

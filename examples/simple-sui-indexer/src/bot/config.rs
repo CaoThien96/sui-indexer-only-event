@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::sync::Arc;
 
 use crate::bot::event_types;
-use crate::dex::AggSwap;
+use crate::dex::{AggSwap, SnipVaultClient};
 use crate::provider::{SuiRpcClient, VaultKeypair};
 
 #[derive(Clone, Debug)]
@@ -12,9 +12,13 @@ pub struct BotConfig {
     pub snip_delay_ms_min: u64,
     pub snip_delay_ms_max: u64,
     pub snip_lp_wait_ms: u64,
+    /// When true, failed vault snip falls back to agg_swap + separate LP.
+    pub snip_vault_fallback_agg: bool,
     pub min_pool_reserve_sui: u128,
     pub remove_reserve_threshold: u128,
     pub sell_buy_threshold: u128,
+    /// `sui_executeTransactionBlock` request type for sell hot path (e.g. WaitForEffectsCert).
+    pub sell_tx_request_type: String,
     pub processed_swaps_ttl_days: u32,
     pub cleanup_interval_secs: u64,
     pub blacklist_tokens: Vec<String>,
@@ -44,9 +48,15 @@ impl BotConfig {
             snip_delay_ms_min: env_u64("SNIP_DELAY_MS_MIN", 5_000),
             snip_delay_ms_max: env_u64("SNIP_DELAY_MS_MAX", 10_000),
             snip_lp_wait_ms: env_u64("SNIP_LP_WAIT_MS", 60_000),
+            snip_vault_fallback_agg: env_bool("SNIP_VAULT_FALLBACK_AGG", true),
             min_pool_reserve_sui: env_u128("MIN_POOL_RESERVE_SUI", 10_000_000_000),
             remove_reserve_threshold: env_u128("REMOVE_RESERVE_THRESHOLD", 2_000_000_000),
             sell_buy_threshold: env_u128("SELL_BUY_THRESHOLD", 500_000_000),
+            sell_tx_request_type: std::env::var("SELL_TX_REQUEST_TYPE")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "WaitForEffectsCert".into()),
             processed_swaps_ttl_days: env_u32("BOT_PROCESSED_SWAPS_TTL_DAYS", 7),
             cleanup_interval_secs: env_u64("BOT_CLEANUP_INTERVAL_SECS", 86_400),
             blacklist_tokens,
@@ -74,6 +84,15 @@ fn env_u64(key: &str, default: u64) -> u64 {
 
 fn env_u128(key: &str, default: u128) -> u128 {
     env_parse(key, default)
+}
+
+fn env_bool(key: &str, default: bool) -> bool {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(default)
 }
 
 fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -111,6 +130,7 @@ pub struct BotRuntime {
     pub rpc: Arc<SuiRpcClient>,
     pub vault: Arc<VaultKeypair>,
     pub agg: Arc<AggSwap>,
+    pub snip_vault: Option<Arc<SnipVaultClient>>,
 }
 
 impl BotRuntime {
@@ -127,12 +147,18 @@ impl BotRuntime {
         let config = BotConfig::from_env()?;
         let rpc = Arc::new(SuiRpcClient::from_env().await?);
         let vault = VaultKeypair::from_env()?;
-        let agg = Arc::new(AggSwap::new(Arc::clone(&rpc), Arc::clone(&vault)));
+        let agg = Arc::new(AggSwap::new(
+            Arc::clone(&rpc),
+            Arc::clone(&vault),
+            Some(config.sell_tx_request_type.clone()),
+        ));
+        let snip_vault = SnipVaultClient::from_env()?.map(Arc::new);
         Ok(Arc::new(Self {
             config,
             rpc,
             vault,
             agg,
+            snip_vault,
         }))
     }
 

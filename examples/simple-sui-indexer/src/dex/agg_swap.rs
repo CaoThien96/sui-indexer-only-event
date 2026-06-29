@@ -33,6 +33,8 @@ pub struct SwapExecMetrics {
     pub build_ms: u64,
     /// Detect → build done (ms), when sell passes `sell_detected_at`.
     pub detect_to_build_ms: Option<u64>,
+    /// Detect → submit call to RPC started (ms).
+    pub detect_to_submit_ms: Option<u64>,
     pub submit_at: String,
     /// Submit → local execution confirmed (ms).
     pub confirm_ms: u64,
@@ -41,11 +43,20 @@ pub struct SwapExecMetrics {
 pub struct AggSwap {
     rpc: Arc<SuiRpcClient>,
     vault: Arc<VaultKeypair>,
+    sell_tx_request_type: Option<String>,
 }
 
 impl AggSwap {
-    pub fn new(rpc: Arc<SuiRpcClient>, vault: Arc<VaultKeypair>) -> Self {
-        Self { rpc, vault }
+    pub fn new(
+        rpc: Arc<SuiRpcClient>,
+        vault: Arc<VaultKeypair>,
+        sell_tx_request_type: Option<String>,
+    ) -> Self {
+        Self {
+            rpc,
+            vault,
+            sell_tx_request_type,
+        }
     }
 
     pub async fn swap_exact_amount(
@@ -58,14 +69,15 @@ impl AggSwap {
         input_is_coin: bool,
         mode: SwapMode,
         sell_detected_at: Option<Instant>,
+        dry_run: bool,
     ) -> Result<(String, SwapExecMetrics)> {
         let build_start = Instant::now();
         let sender = self.vault.address();
-        let gas_price = self.rpc.get_reference_gas_price().await?;
+        let gas_price_ref = self.rpc.get_reference_gas_price_cached().await?;
         let (budget, price) = match mode {
             // Safe: bot-snip leaves gas budget to SDK auto-estimate (~0.1–0.5 SUI on mainnet).
             // 50M was too low for Turbos agg swap (InsufficientGas at MergeCoins).
-            SwapMode::Safe => (500_000_000, gas_price),
+            SwapMode::Safe => (500_000_000, gas_price_ref),
             SwapMode::Fast => (2_000_000_000, 1000),
             SwapMode::Superfast => (4_000_000_000, 2000),
         };
@@ -105,7 +117,7 @@ impl AggSwap {
             ptb.transfer_arg(sender, swap_result);
         }
 
-        let gas = self.select_gas_coin(sender, budget).await?;
+        let gas = self.rpc.select_gas_coin(sender, budget).await?;
         let tx_data =
             TransactionData::new_programmable(sender, vec![gas], ptb.finish(), budget, price);
         let sig = self.vault.sign_transaction(&tx_data);
@@ -115,13 +127,22 @@ impl AggSwap {
         let submit_at = chrono::Utc::now()
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let submit_start = Instant::now();
+        let detect_to_submit_ms = sell_detected_at.map(|t| t.elapsed().as_millis() as u64);
+        let sell_request = a2b
+            .then(|| self.sell_tx_request_type.as_deref())
+            .flatten();
 
-        match self.rpc.execute_transaction(tx_data, sig).await {
+        match self
+            .rpc
+            .execute_or_dry_run(tx_data, sig, dry_run, sell_request)
+            .await
+        {
             Ok(digest) => {
                 let confirm_ms = submit_start.elapsed().as_millis() as u64;
                 let metrics = SwapExecMetrics {
                     build_ms,
                     detect_to_build_ms,
+                    detect_to_submit_ms,
                     submit_at: submit_at.clone(),
                     confirm_ms,
                 };
@@ -237,28 +258,6 @@ impl AggSwap {
         }
         let amt = ptb.pure(amount)?;
         Ok(ptb.command(Command::SplitCoins(primary, vec![amt])))
-    }
-
-    async fn select_gas_coin(
-        &self,
-        owner: SuiAddress,
-        min_balance: u64,
-    ) -> Result<ObjectRef> {
-        let coins = self.rpc.get_coins(owner, SUI_TYPE).await?;
-        if coins.is_empty() {
-            bail!("no gas coin");
-        }
-        // Prefer a coin that can cover the gas budget; otherwise use the largest balance.
-        let mut best = &coins[0];
-        for coin in &coins {
-            if coin.balance >= min_balance as u128 {
-                return self.rpc.get_object_ref(&coin.coin_object_id).await;
-            }
-            if coin.balance > best.balance {
-                best = coin;
-            }
-        }
-        self.rpc.get_object_ref(&best.coin_object_id).await
     }
 
     async fn estimate_token_amount_for_sui(

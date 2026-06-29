@@ -6,6 +6,8 @@ use sui_types::transaction::{Argument, Command, ObjectArg, TransactionData};
 use tracing::{info, warn};
 
 use crate::bot::config::BotRuntime;
+use crate::bot::pool_shared::persist_pool_shared_version;
+use crate::bot::state::BotStateStore;
 use crate::bot::token_type::parse_type_tag;
 use crate::dex::agg_swap::clock_arg;
 use crate::dex::turbos_contract::{self, MINT_DEADLINE_MS};
@@ -17,14 +19,17 @@ const SLIPPAGE_PERCENT: u64 = 5;
 
 pub async fn open_pool_position_with_lp_fixed(
     runtime: &BotRuntime,
+    store: Option<&BotStateStore>,
     pool: &str,
     symbol: &str,
     notify_fail: bool,
+    dry_run: bool,
 ) -> Result<String> {
     let mut attempt = 0;
     let mut last_err: Option<anyhow::Error> = None;
-    while attempt < 3 {
-        match try_open(runtime, pool).await {
+    let max_attempts = if dry_run { 1 } else { 3 };
+    while attempt < max_attempts {
+        match try_open(runtime, store, pool, dry_run).await {
             Ok(digest) => {
                 info!(digest = %digest, pool = %pool, "turbos lp fixed success");
                 return Ok(digest);
@@ -52,7 +57,12 @@ pub async fn open_pool_position_with_lp_fixed(
     Err(err)
 }
 
-async fn try_open(runtime: &BotRuntime, pool: &str) -> Result<String> {
+async fn try_open(
+    runtime: &BotRuntime,
+    store: Option<&BotStateStore>,
+    pool: &str,
+    dry_run: bool,
+) -> Result<String> {
     let rpc = &runtime.rpc;
     let vault = &runtime.vault;
     let sender = vault.address();
@@ -101,7 +111,9 @@ async fn try_open(runtime: &BotRuntime, pool: &str) -> Result<String> {
         ptb.command(Command::MakeMoveVec(None, vec![coin]))
     };
 
-    let pool_arg = ptb.obj(rpc.object_arg(pool, true).await?)?;
+    let pool_raw = rpc.object_arg(pool, true).await?;
+    persist_pool_shared_version(store, pool, &pool_raw).await?;
+    let pool_arg = ptb.obj(pool_raw)?;
     let positions_arg = ptb.obj(rpc.object_arg(turbos_contract::POSITIONS, true).await?)?;
     let versioned_arg = ptb.obj(rpc.object_arg(turbos_contract::VERSIONED, false).await?)?;
     let clock = clock_arg(&mut ptb)?;
@@ -151,7 +163,7 @@ async fn try_open(runtime: &BotRuntime, pool: &str) -> Result<String> {
     let tx_data =
         TransactionData::new_programmable(sender, vec![gas], ptb.finish(), 200_000_000, gas_price);
     let sig = vault.sign_transaction(&tx_data);
-    rpc.execute_transaction(tx_data, sig).await
+    rpc.execute_or_dry_run(tx_data, sig, dry_run, None).await
 }
 
 fn coin_zero(ptb: &mut ProgrammableTransactionBuilder, coin_type: &str) -> Result<Argument> {

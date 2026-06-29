@@ -199,7 +199,7 @@ impl BotReactor {
         )? else {
             return Ok(());
         };
-        process_swap_old_token(Arc::clone(&self.runtime), &self.store, swap).await
+        process_swap_old_token(Arc::clone(&self.runtime), Arc::clone(&self.store), swap).await
     }
 
     async fn try_schedule_snip(

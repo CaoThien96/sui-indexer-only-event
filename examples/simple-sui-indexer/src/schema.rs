@@ -19,6 +19,7 @@ diesel::table! {
         token_id -> Varchar,
         dex -> BotDex,
         tx_digest -> Varchar,
+        initial_shared_version -> Nullable<Int8>,
         created_at -> Timestamptz,
         updated_at -> Timestamptz,
     }

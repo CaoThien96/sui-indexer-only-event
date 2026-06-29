@@ -15,7 +15,7 @@ const SELL_RETRY_ATTEMPTS: usize = 5;
 
 pub async fn process_swap_old_token(
     runtime: Arc<BotRuntime>,
-    store: &BotStateStore,
+    store: Arc<BotStateStore>,
     swap: ParsedSwap,
 ) -> Result<()> {
     if store
@@ -53,11 +53,16 @@ pub async fn process_swap_old_token(
         return Ok(());
     }
 
+    let should_sell =
+        swap.is_buy && swap.sui_amount >= runtime.config.sell_buy_threshold;
+    let sell_detected_at = should_sell.then_some(Instant::now());
+
     info!(
         pool = %swap.pool,
         symbol = %token.symbol,
         is_buy = swap.is_buy,
         sui_amount = swap.sui_amount,
+        should_sell,
         "old token swap detected"
     );
 
@@ -67,34 +72,35 @@ pub async fn process_swap_old_token(
 
     let vault_addr = runtime.vault.address_string();
     if token.status == TokenStatus::Done && swap.maker != vault_addr {
-        telegram_notify::send_bot_message(&format_old_token_swap(
+        let telegram_msg = format_old_token_swap(
             swap.sui_amount,
             swap.token_amount,
             swap.is_buy,
             &swap.maker,
             &pool.id,
-        ))
-        .await;
+        );
+        tokio::spawn(async move {
+            telegram_notify::send_bot_message(&telegram_msg).await;
+        });
     }
 
-    if !swap.is_buy {
-        debug!(
-            pool = %swap.pool,
-            symbol = %token.symbol,
-            sui_amount = swap.sui_amount,
-            "skip sell: swap is not a buy"
-        );
-        return Ok(());
-    }
-
-    if swap.sui_amount < runtime.config.sell_buy_threshold {
-        info!(
-            pool = %swap.pool,
-            symbol = %token.symbol,
-            sui_amount = swap.sui_amount,
-            threshold = runtime.config.sell_buy_threshold,
-            "skip sell: buy below SELL_BUY_THRESHOLD"
-        );
+    if !should_sell {
+        if !swap.is_buy {
+            debug!(
+                pool = %swap.pool,
+                symbol = %token.symbol,
+                sui_amount = swap.sui_amount,
+                "skip sell: swap is not a buy"
+            );
+        } else {
+            info!(
+                pool = %swap.pool,
+                symbol = %token.symbol,
+                sui_amount = swap.sui_amount,
+                threshold = runtime.config.sell_buy_threshold,
+                "skip sell: buy below SELL_BUY_THRESHOLD"
+            );
+        }
         return Ok(());
     }
 
@@ -106,12 +112,14 @@ pub async fn process_swap_old_token(
     let token_amount = swap.token_amount as u64;
     let mode = sell_mode(swap.sui_amount);
 
-    let sell_detected_at = Instant::now();
+    let sell_detected_at = sell_detected_at.expect("should_sell implies sell_detected_at");
 
+    let store_for_sell = Arc::clone(&store);
     tokio::spawn(async move {
         let queue_ms = sell_detected_at.elapsed().as_millis() as u64;
         if let Err(err) = execute_sell_with_retry(
             &runtime,
+            &store_for_sell,
             dex,
             &token_type,
             &pool_id,
@@ -163,6 +171,7 @@ fn sell_amount_for_attempt(full_amount: u64, attempt: usize) -> Option<(u64, u64
 
 async fn execute_sell_with_retry(
     runtime: &BotRuntime,
+    store: &BotStateStore,
     dex: Dex,
     token_type: &str,
     pool_id: &str,
@@ -197,20 +206,38 @@ async fn execute_sell_with_retry(
             "sell old token attempt"
         );
 
-        match runtime
-            .agg
-            .swap_exact_amount(
-                dex,
-                true,
-                token_type,
-                pool_id,
-                amount,
-                true,
-                mode,
-                Some(sell_detected_at),
-            )
-            .await
-        {
+        let sell_result = if let Some(vault) = &runtime.snip_vault {
+            vault
+                .sell_with_metrics(
+                    runtime,
+                    Some(store),
+                    dex,
+                    token_type,
+                    pool_id,
+                    amount,
+                    false,
+                    Some(sell_detected_at),
+                    false,
+                )
+                .await
+        } else {
+            runtime
+                .agg
+                .swap_exact_amount(
+                    dex,
+                    true,
+                    token_type,
+                    pool_id,
+                    amount,
+                    true,
+                    mode,
+                    Some(sell_detected_at),
+                    false,
+                )
+                .await
+        };
+
+        match sell_result {
             Ok((digest, metrics)) => {
                 let sell_total_ms = sell_detected_at.elapsed().as_millis() as u64;
                 info!(
@@ -219,6 +246,7 @@ async fn execute_sell_with_retry(
                     percent,
                     attempt = attempt + 1,
                     spawn_queue_ms,
+                    detect_to_submit_ms = ?metrics.detect_to_submit_ms,
                     detect_to_build_ms = ?metrics.detect_to_build_ms,
                     build_ms = metrics.build_ms,
                     submit_at = %metrics.submit_at,
@@ -244,6 +272,95 @@ async fn execute_sell_with_retry(
                     amount,
                     detect_elapsed_ms = sell_detected_at.elapsed().as_millis() as u64,
                     "sell old token attempt failed"
+                );
+                last_err = Some(err);
+            }
+        }
+    }
+
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("sell failed with no attempts")))
+}
+
+/// Manual sell for CLI testing (`bot-sell` bin). Returns tx digest on success.
+pub async fn run_sell_manual(
+    runtime: &BotRuntime,
+    store: Option<&BotStateStore>,
+    dex: Dex,
+    token_type: &str,
+    pool_id: &str,
+    token_amount: u64,
+    mode: SwapMode,
+    max_attempts: usize,
+    dry_run: bool,
+) -> Result<String> {
+    let sell_detected_at = Instant::now();
+    let mut last_err: Option<anyhow::Error> = None;
+    let attempts = max_attempts.max(1);
+
+    for attempt in 0..attempts {
+        let Some((amount, percent)) = sell_amount_for_attempt(token_amount, attempt) else {
+            continue;
+        };
+
+        info!(
+            pool = %pool_id,
+            attempt = attempt + 1,
+            max_attempts = attempts,
+            percent,
+            amount,
+            "manual sell attempt"
+        );
+
+        let sell_result = if let Some(vault) = &runtime.snip_vault {
+            vault
+                .sell_with_metrics(
+                    runtime,
+                    store,
+                    dex,
+                    token_type,
+                    pool_id,
+                    amount,
+                    dry_run,
+                    None,
+                    true,
+                )
+                .await
+                .map(|(digest, metrics)| (digest, metrics.confirm_ms))
+        } else {
+            runtime
+                .agg
+                .swap_exact_amount(
+                    dex,
+                    true,
+                    token_type,
+                    pool_id,
+                    amount,
+                    true,
+                    mode,
+                    Some(sell_detected_at),
+                    dry_run,
+                )
+                .await
+                .map(|(digest, metrics)| (digest, metrics.confirm_ms))
+        };
+
+        match sell_result {
+            Ok((digest, confirm_ms)) => {
+                info!(
+                    digest = %digest,
+                    attempt = attempt + 1,
+                    confirm_ms,
+                    "manual sell confirmed"
+                );
+                return Ok(digest);
+            }
+            Err(err) => {
+                warn!(
+                    ?err,
+                    attempt = attempt + 1,
+                    percent,
+                    amount,
+                    "manual sell attempt failed"
                 );
                 last_err = Some(err);
             }
