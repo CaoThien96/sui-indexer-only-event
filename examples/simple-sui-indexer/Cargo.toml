@@ -10,9 +10,45 @@ resolver = "2"
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }
 
+[lib]
+name = "simple_sui_indexer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "simple-sui-indexer"
+path = "src/main.rs"
+
 [[bin]]
 name = "backfill-parsed-json"
 path = "src/bin/backfill_parsed_json.rs"
+
+[[bin]]
+name = "migrate-removed-tokens"
+path = "src/bin/migrate_removed_tokens.rs"
+
+[[bin]]
+name = "backfill-pool-shared-version"
+path = "src/bin/backfill_pool_shared_version.rs"
+
+[[bin]]
+name = "bot-test-snip"
+path = "src/bin/bot_test_snip.rs"
+
+[[bin]]
+name = "bot-snip"
+path = "src/bin/bot_snip.rs"
+
+[[bin]]
+name = "bot-sell"
+path = "src/bin/bot_sell.rs"
+
+[[bin]]
+name = "vault-deposit"
+path = "src/bin/vault_deposit.rs"
+
+[[bin]]
+name = "vault-withdraw"
+path = "src/bin/vault_withdraw.rs"
 
 [dependencies]
 sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", branch = "mainnet" }
@@ -36,3 +72,12 @@ bcs = "0.1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 clickhouse = { version = "0.13", features = ["inserter"] }
 base64 = "0.22"
+shared-crypto = { git = "https://github.com/MystenLabs/sui.git", branch = "mainnet", package = "shared-crypto" }
+fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "0eea35ee442a798fb1f1e7c2f39dc021bd21dbc3" }
+sui-types = { git = "https://github.com/MystenLabs/sui.git", branch = "mainnet", package = "sui-types" }
+rand = "0.8"
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4"] }
+chrono = { version = "0.4", features = ["serde"] }
+move-core-types = { git = "https://github.com/MystenLabs/sui.git", branch = "mainnet", package = "move-core-types" }
+num-bigint = "0.4"
+num-traits = "0.2"

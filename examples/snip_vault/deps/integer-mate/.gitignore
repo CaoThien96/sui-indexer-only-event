@@ -1,0 +1,11 @@
+/sui/.idea
+/sui/sui.log.*
+/aptos/.idea
+/aptos/.aptos
+/sui/build
+/aptos/build
+/build
+/.idea
+/.aptos
+/sui/.coverage_map.mvcov
+/sui/.trace

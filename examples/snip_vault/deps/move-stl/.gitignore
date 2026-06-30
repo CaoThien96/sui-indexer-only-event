@@ -1,0 +1,7 @@
+# Added by cargo
+.idea
+.trace
+.coverage_map.mvcov
+migration.patch
+/build
+/sui/build

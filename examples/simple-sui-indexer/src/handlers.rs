@@ -1,8 +1,9 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde_json::Value;
 use std::sync::Arc;
 
 use crate::app_metrics::AppMetrics;
+use crate::bot::reactor::{BotEventContext, BotReactor};
 use crate::clickhouse_events::ClickHouseEventsWriter;
 use sui_indexer_alt_framework::pipeline::Processor;
 use sui_indexer_alt_framework::types::full_checkpoint_content::Checkpoint;
@@ -15,12 +16,13 @@ use sui_indexer_alt_framework::{
     pipeline::sequential::Handler,
     postgres::{Connection, Db},
 };
-use tracing::{debug, info};
+use tracing::debug;
 
 pub struct EventTypeHandler {
     event_type_prefixes: Vec<String>,
     app_metrics: Arc<AppMetrics>,
     ch_writer: Arc<ClickHouseEventsWriter>,
+    bot_reactor: Option<Arc<BotReactor>>,
 }
 
 impl EventTypeHandler {
@@ -28,11 +30,13 @@ impl EventTypeHandler {
         event_type_prefixes: Vec<String>,
         app_metrics: Arc<AppMetrics>,
         ch_writer: Arc<ClickHouseEventsWriter>,
+        bot_reactor: Option<Arc<BotReactor>>,
     ) -> Self {
         Self {
             event_type_prefixes,
             app_metrics,
             ch_writer,
+            bot_reactor,
         }
     }
 
@@ -59,6 +63,7 @@ impl Processor for EventTypeHandler {
         for (tx_idx, tx) in checkpoint.transactions.iter().enumerate() {
             let tx_digest = tx.transaction.digest().to_string();
             let checkpoint_timestamp_ms = Some(checkpoint.summary.timestamp_ms as i64);
+            let mut tx_bot_events = Vec::new();
 
             if let Some(events) = &tx.events {
                 for (event_idx, event) in events.data.iter().enumerate() {
@@ -95,6 +100,19 @@ impl Processor for EventTypeHandler {
                             return Err(error);
                         }
                     };
+
+                    if let (Some(_reactor), Some(parsed)) =
+                        (self.bot_reactor.as_ref(), parsed_json.clone())
+                    {
+                        tx_bot_events.push(BotEventContext {
+                            event_type: event_type_str.clone(),
+                            tx_digest: tx_digest.clone(),
+                            event_seq: event_idx,
+                            sender: event.sender.to_string(),
+                            parsed_json: parsed,
+                        });
+                    }
+
                     rows.push(StoredPackageEvent {
                         event_id_tx_digest: tx_digest.clone(),
                         event_id_seq: event_idx as i64,
@@ -112,11 +130,28 @@ impl Processor for EventTypeHandler {
                     });
                 }
             }
+
+            if let Some(reactor) = self.bot_reactor.as_ref() {
+                if !tx_bot_events.is_empty() {
+                    let reactor = Arc::clone(reactor);
+                    let metrics = Arc::clone(&self.app_metrics);
+                    tokio::spawn(async move {
+                        let start = std::time::Instant::now();
+                        if let Err(err) = reactor.handle_transaction(tx_bot_events).await {
+                            tracing::error!(?err, "bot reactor error");
+                            metrics.bot_errors.inc();
+                        }
+                        metrics
+                            .bot_event_latency_ms
+                            .observe(start.elapsed().as_millis() as f64);
+                    });
+                }
+            }
         }
 
         let log_every_n = Self::log_every_n_checkpoints();
         if checkpoint_seq % log_every_n == 0 {
-            info!(
+            debug!(
                 checkpoint_sequence_number = checkpoint_seq,
                 matched_events = matched_events,
                 log_every_n_checkpoints = log_every_n,

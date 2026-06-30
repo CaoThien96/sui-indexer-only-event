@@ -1,0 +1,8 @@
+[package]
+name = "snip_vault"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cetusclmm = { local = "./deps/cetus_clmm" }
+turbos_clmm = { local = "./deps/turbos_clmm" }

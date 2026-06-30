@@ -177,7 +177,23 @@ EVENT_TYPE_PREFIXES=0x1eabed72c53feb3805120a081dc15963c204dc8d091542592abaf7a356
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGHIjklMNOpqrsTUVwxyz
 TELEGRAM_CHAT_ID=-1001234567890
 TELEGRAM_NOTIFY_COOLDOWN_SECS=300
+
+# Integrated snip bot (replaces bot-snip polling)
+# BOT_ENABLED=true
+# MAIN_RPC=https://fullnode.mainnet.sui.io:443
+# VAULT_PATH=./vault.json
+# SELL_BUY_THRESHOLD=500000000
 ```
+
+**Snip bot (integrated):** set `BOT_ENABLED=true` and copy `vault.json` from bot-snip. Events are handled in-process right after decode (no `queryEvents` poll). Migrate existing removed tokens once:
+
+```bash
+BOT_SNIP_DATABASE_URL=postgres://...bot_snip_db... \
+DATABASE_URL=postgres://...sui_indexer... \
+cargo run --release --bin migrate-removed-tokens
+```
+
+Stop bot-snip before running the indexer with `BOT_ENABLED=true` to avoid duplicate sell txs.
 
 **Telegram setup:** create a bot via [@BotFather](https://t.me/BotFather), add it to your group/channel, send a message, then resolve chat id (e.g. `https://api.telegram.org/bot<token>/getUpdates`). Cooldown dedupes identical `pipeline + event_type + error` so framework retries do not spam the chat.
 
@@ -212,6 +228,8 @@ METRICS_ADDRESS=127.0.0.1:9190 cargo run --release -- --metrics-address 127.0.0.
 - `simple_sui_indexer_events_matched_total`
 - `simple_sui_indexer_decode_errors_total{event_type="…"}`
 - `simple_sui_indexer_package_events_inserted_total`
+- `simple_sui_indexer_bot_errors_total`
+- `simple_sui_indexer_bot_event_latency_ms`
 - `uptime{version="…"}`
 
 Prometheus scrape example:
