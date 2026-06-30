@@ -3,10 +3,10 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use clickhouse::Client;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::Instant;
-use clickhouse::Client;
 use tracing::{error, info, warn};
 
 use crate::db::{event_filter_label, parse_query_events_params, query_events};
@@ -31,14 +31,11 @@ pub async fn json_rpc(State(state): State<AppState>, Json(body): Json<Value>) ->
 async fn dispatch(client: &Client, body: &Value) -> Result<Value, Value> {
     let started = Instant::now();
     let id = body.get("id").cloned().unwrap_or(Value::Null);
-    let method = body
-        .get("method")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            let err = invalid_request(id.clone(), "missing method");
-            log_rpc_request("<missing>", started.elapsed_ms(), &Err(err.clone()));
-            err
-        })?;
+    let method = body.get("method").and_then(|v| v.as_str()).ok_or_else(|| {
+        let err = invalid_request(id.clone(), "missing method");
+        log_rpc_request("<missing>", started.elapsed_ms(), &Err(err.clone()));
+        err
+    })?;
 
     if body.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
         let err = invalid_request(id, "jsonrpc must be \"2.0\"");
@@ -67,14 +64,34 @@ async fn handle_query_events(
 
     let params = params.ok_or_else(|| {
         let err = invalid_params(id.clone(), "missing params");
-        log_query_events(started.elapsed_ms(), 0.0, 0, 0, false, false, "?", false, Some(-32602));
+        log_query_events(
+            started.elapsed_ms(),
+            0.0,
+            0,
+            0,
+            false,
+            false,
+            "?",
+            false,
+            Some(-32602),
+        );
         err
     })?;
 
     let query_params = parse_query_events_params(params).map_err(|e| {
         error!(error = %e, "invalid suix_queryEvents params");
         let err = invalid_params(id.clone(), e.to_string());
-        log_query_events(started.elapsed_ms(), 0.0, 0, 0, false, false, "?", false, Some(-32602));
+        log_query_events(
+            started.elapsed_ms(),
+            0.0,
+            0,
+            0,
+            false,
+            false,
+            "?",
+            false,
+            Some(-32602),
+        );
         err
     })?;
 
@@ -154,12 +171,7 @@ fn slow_warn_threshold_ms() -> f64 {
 fn maybe_warn_slow(method: &str, elapsed_ms: f64) {
     let threshold_ms = slow_warn_threshold_ms();
     if elapsed_ms >= threshold_ms {
-        warn!(
-            method,
-            elapsed_ms,
-            threshold_ms,
-            "slow rpc request"
-        );
+        warn!(method, elapsed_ms, threshold_ms, "slow rpc request");
     }
 }
 
@@ -172,13 +184,7 @@ fn log_rpc_request(method: &str, elapsed_ms: f64, result: &Result<Value, Value>)
         .and_then(|e| e.get("code"))
         .and_then(|c| c.as_i64());
 
-    info!(
-        method,
-        elapsed_ms,
-        ok,
-        error_code,
-        "json-rpc request"
-    );
+    info!(method, elapsed_ms, ok, error_code, "json-rpc request");
     maybe_warn_slow(method, elapsed_ms);
 }
 

@@ -271,7 +271,10 @@ pub async fn query_events(
 
     query = query.bind(fetch_limit);
 
-    debug_assert_eq!(bind_count, count_binds(&params.filter, params.cursor.is_some()));
+    debug_assert_eq!(
+        bind_count,
+        count_binds(&params.filter, params.cursor.is_some())
+    );
 
     let rows = query
         .fetch_all::<PackageEventChRow>()
