@@ -1,5 +1,15 @@
-# Build processor binaries from workspace root.
-FROM rust:1.95-bookworm AS builder
+# syntax=docker/dockerfile:1
+# Build all processor binaries once; each compose service picks its entrypoint via `command`.
+FROM rust:1.95-bookworm AS chef
+RUN cargo install cargo-chef --locked
+WORKDIR /app
+
+FROM chef AS planner
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
@@ -8,16 +18,36 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+# Dependency layer: manifests + recipe only (no application source yet).
+COPY --from=planner /app/recipe.json recipe.json
 COPY Cargo.toml Cargo.lock ./
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo chef cook --release --recipe-path recipe.json
+
+# Application source + link real binaries against cached deps.
 COPY crates ./crates
 
-RUN cargo build --release -p sui-processors \
-    --bin catalog-worker \
-    --bin swap-normalizer \
-    --bin volume-engine \
-    --bin ohlc-aggregator \
-    --bin rolloff-job
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release -p sui-processors \
+        --bin catalog-worker \
+        --bin swap-normalizer \
+        --bin volume-engine \
+        --bin rolloff-job \
+        --bin oracle-bootstrap && \
+    test "$(wc -c < /app/target/release/catalog-worker)" -gt 1000000 && \
+    test "$(wc -c < /app/target/release/volume-engine)" -gt 1000000 && \
+    mkdir -p /app/out && \
+    cp /app/target/release/catalog-worker \
+       /app/target/release/swap-normalizer \
+       /app/target/release/volume-engine \
+       /app/target/release/rolloff-job \
+       /app/target/release/oracle-bootstrap \
+       /app/out/
 
 FROM debian:bookworm-slim
 
@@ -26,8 +56,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/catalog-worker /usr/local/bin/catalog-worker
-COPY --from=builder /app/target/release/swap-normalizer /usr/local/bin/swap-normalizer
-COPY --from=builder /app/target/release/volume-engine /usr/local/bin/volume-engine
-COPY --from=builder /app/target/release/ohlc-aggregator /usr/local/bin/ohlc-aggregator
-COPY --from=builder /app/target/release/rolloff-job /usr/local/bin/rolloff-job
+COPY --from=builder /app/out/catalog-worker /usr/local/bin/catalog-worker
+COPY --from=builder /app/out/swap-normalizer /usr/local/bin/swap-normalizer
+COPY --from=builder /app/out/volume-engine /usr/local/bin/volume-engine
+COPY --from=builder /app/out/rolloff-job /usr/local/bin/rolloff-job
+COPY --from=builder /app/out/oracle-bootstrap /usr/local/bin/oracle-bootstrap

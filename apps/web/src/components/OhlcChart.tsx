@@ -3,8 +3,34 @@ import { createChart, type IChartApi, type ISeriesApi } from "lightweight-charts
 import type { OhlcBar, OhlcInterval } from "../api/types";
 import { OHLC_INTERVALS, RANGE_PRESETS, isoRange } from "../lib/format";
 
+const pad = (n: number) => String(n).padStart(2, "0");
+
+function formatTime(ts: number, iv: OhlcInterval): string {
+  const d = new Date(ts * 1000);
+  const yyyy = d.getUTCFullYear();
+  const MM = pad(d.getUTCMonth() + 1);
+  const dd = pad(d.getUTCDate());
+  const hh = pad(d.getUTCHours());
+  const mm = pad(d.getUTCMinutes());
+  if (iv === "24h") return `${yyyy}-${MM}-${dd}`;
+  if (iv === "1h" || iv === "4h") return `${MM}/${dd} ${hh}:${mm}`;
+  return `${MM}/${dd} ${hh}:${mm}`;
+}
+
+function computePrecision(bars: OhlcBar[]): number {
+  const sample = bars.slice(0, 20);
+  let minPrice = Infinity;
+  for (const b of sample) {
+    const c = Math.abs(Number(b.close));
+    if (c > 0 && c < minPrice) minPrice = c;
+  }
+  if (!isFinite(minPrice) || minPrice === 0) return 2;
+  const digits = Math.ceil(-Math.log10(minPrice)) + 2;
+  return Math.max(2, Math.min(digits, 10));
+}
+
 interface Props {
-  poolId: string | null;
+  chartKey: string | null;
   baseCoinType?: string;
   bars: OhlcBar[];
   interval: OhlcInterval;
@@ -15,7 +41,7 @@ interface Props {
 }
 
 export function OhlcChart({
-  poolId,
+  chartKey,
   bars,
   interval,
   rangeHours,
@@ -28,8 +54,10 @@ export function OhlcChart({
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
 
   useEffect(() => {
-    if (!containerRef.current) return;
-    const chart = createChart(containerRef.current, {
+    if (!chartKey || !containerRef.current) return;
+
+    const container = containerRef.current;
+    const chart = createChart(container, {
       layout: {
         background: { color: "#09090b" },
         textColor: "#a1a1aa",
@@ -38,7 +66,13 @@ export function OhlcChart({
         vertLines: { color: "#27272a" },
         horzLines: { color: "#27272a" },
       },
-      width: containerRef.current.clientWidth,
+      localization: {
+        timeFormatter: (ts: number) => formatTime(ts, interval),
+      },
+      timeScale: {
+        tickMarkFormatter: (ts: number) => formatTime(ts, interval),
+      },
+      width: container.clientWidth,
       height: 320,
     });
     const series = chart.addCandlestickSeries({
@@ -52,11 +86,9 @@ export function OhlcChart({
     seriesRef.current = series;
 
     const ro = new ResizeObserver(() => {
-      if (containerRef.current) {
-        chart.applyOptions({ width: containerRef.current.clientWidth });
-      }
+      chart.applyOptions({ width: container.clientWidth });
     });
-    ro.observe(containerRef.current);
+    ro.observe(container);
 
     return () => {
       ro.disconnect();
@@ -64,10 +96,20 @@ export function OhlcChart({
       chartRef.current = null;
       seriesRef.current = null;
     };
-  }, []);
+  }, [chartKey, interval]);
 
   useEffect(() => {
     if (!seriesRef.current) return;
+
+    const prec = computePrecision(bars);
+    seriesRef.current.applyOptions({
+      priceFormat: {
+        type: "price",
+        precision: prec,
+        minMove: 1 / Math.pow(10, prec),
+      },
+    });
+
     const data = bars.map((b) => ({
       time: Math.floor(new Date(b.bucket).getTime() / 1000) as import("lightweight-charts").UTCTimestamp,
       open: Number(b.open),
@@ -77,11 +119,11 @@ export function OhlcChart({
     }));
     seriesRef.current.setData(data);
     chartRef.current?.timeScale().fitContent();
-  }, [bars]);
+  }, [bars, chartKey]);
 
-  if (!poolId) {
+  if (!chartKey) {
     return (
-      <p className="text-sm text-zinc-500">Select a pool to view OHLC chart.</p>
+      <p className="text-sm text-zinc-500">Chart unavailable for this token.</p>
     );
   }
 

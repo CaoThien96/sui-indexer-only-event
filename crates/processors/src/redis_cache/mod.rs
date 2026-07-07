@@ -39,6 +39,26 @@ impl RedisCache {
         Ok(())
     }
 
+    pub async fn set_token_price_usd(
+        &self,
+        coin_type: &str,
+        price_usd: &str,
+        source_pool_id: Option<&str>,
+    ) -> Result<()> {
+        let key = format!("token:{coin_type}:price:usd");
+        let payload = json!({
+            "price_usd": price_usd,
+            "source_type": "processors",
+            "source_pool_id": source_pool_id,
+            "confidence_score": "1",
+            "is_stale": false,
+        });
+        let mut conn = self.connection().await?;
+        conn.set_ex::<_, _, ()>(&key, payload.to_string(), 60)
+            .await?;
+        Ok(())
+    }
+
     pub async fn set_token_vol_24h(
         &self,
         coin_type: &str,
@@ -48,6 +68,23 @@ impl RedisCache {
         let key = format!("token:{coin_type}:vol:24h");
         let payload = json!({
             "volume": volume,
+            "tx_count": tx_count,
+        });
+        let mut conn = self.connection().await?;
+        conn.set_ex::<_, _, ()>(&key, payload.to_string(), 120)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_token_vol_24h_usd(
+        &self,
+        coin_type: &str,
+        volume_usd: &str,
+        tx_count: i64,
+    ) -> Result<()> {
+        let key = format!("token:{coin_type}:vol:24h:usd");
+        let payload = json!({
+            "volume_usd": volume_usd,
             "tx_count": tx_count,
         });
         let mut conn = self.connection().await?;

@@ -4,7 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import {
   ApiError,
   decodeCoinTypePath,
-  fetchPoolOhlc,
+  fetchTokenOhlc,
   fetchTokenDetail,
   fetchTokenPools,
   fetchTokenSwaps,
@@ -15,7 +15,7 @@ import { OhlcChart } from "../components/OhlcChart";
 import { PoolsTable } from "../components/PoolsTable";
 import { SwapsTable } from "../components/SwapsTable";
 import { TokenHeader } from "../components/TokenHeader";
-import { isoRange } from "../lib/format";
+import { isoRange, MAX_RANGE_HOURS } from "../lib/format";
 
 export function TokenPage() {
   const params = useParams();
@@ -24,6 +24,12 @@ export function TokenPage() {
   const [selectedPoolId, setSelectedPoolId] = useState<string | null>(null);
   const [ohlcInterval, setOhlcInterval] = useState<OhlcInterval>("1h");
   const [rangeHours, setRangeHours] = useState(24 * 7);
+
+  const handleIntervalChange = (iv: OhlcInterval) => {
+    setOhlcInterval(iv);
+    const max = MAX_RANGE_HOURS[iv] ?? 24 * 30;
+    if (rangeHours > max) setRangeHours(max);
+  };
 
   const detailQuery = useQuery({
     queryKey: ["token", coinType],
@@ -45,21 +51,19 @@ export function TokenPage() {
 
   const ohlcQuery = useQuery({
     queryKey: [
-      "ohlc",
-      effectivePoolId,
+      "token-ohlc",
+      coinType,
       ohlcInterval,
       range.from,
       range.to,
-      coinType,
     ],
     queryFn: () =>
-      fetchPoolOhlc(effectivePoolId!, {
+      fetchTokenOhlc(coinType, {
         interval: ohlcInterval,
         from: range.from,
         to: range.to,
-        base_coin_type: coinType,
       }),
-    enabled: Boolean(effectivePoolId),
+    enabled: Boolean(coinType),
   });
 
   const swapsQuery = useInfiniteQuery({
@@ -139,13 +143,13 @@ export function TokenPage() {
         <section>
           <h2 className="mb-3 text-lg font-semibold">Price chart</h2>
           <OhlcChart
-            poolId={effectivePoolId}
+            chartKey={coinType}
             baseCoinType={coinType}
             bars={ohlcQuery.data?.bars ?? []}
             interval={ohlcInterval}
             rangeHours={rangeHours}
             isLoading={ohlcQuery.isLoading}
-            onIntervalChange={setOhlcInterval}
+            onIntervalChange={handleIntervalChange}
             onRangeChange={setRangeHours}
           />
         </section>

@@ -87,8 +87,8 @@ RUST_LOG=info cargo run -p sui-token-indexer
 # Processors (if not using Docker)
 RUST_LOG=info cargo run -p sui-processors --bin catalog-worker
 RUST_LOG=info cargo run -p sui-processors --bin swap-normalizer
+# Requires TIMESCALE_URL (sui_usd_1m lookup) + SUI_GRPC_URL or STREAMING_URL for pool hydration
 RUST_LOG=info cargo run -p sui-processors --bin volume-engine
-RUST_LOG=info cargo run -p sui-processors --bin ohlc-aggregator
 
 # API (if not using Docker)
 RUST_LOG=info cargo run -p sui-api-service
@@ -97,26 +97,49 @@ RUST_LOG=info cargo run -p sui-api-service
 RUST_LOG=info cargo run -p sui-processors --bin rolloff-job
 ```
 
-**Backfill mode** (`.env`):
+**Oracle bootstrap** (SUI/USD seed before indexer):
 
 ```bash
-# INDEXER_RUNTIME_MODE=backfill   # optional; higher ingest concurrency at catch-up
-# FIRST_CHECKPOINT=288461467      # already in .env for mainnet backfill
+# FIRST_CHECKPOINT=288461467
+# BOOTSTRAP_TRUSTED_POOL_IDS=0x...,0x...
+# BOOTSTRAP_MAX_LOOKBACK_CHECKPOINTS=200000
+# BOOTSTRAP_MAX_PRICE_AGE_MINUTES=60
+# BOOTSTRAP_MIN_BUCKETS=1
+# SUI_ARCHIVAL_GRPC_URL=https://archive.mainnet.sui.io:443
+# ORACLE_BOOTSTRAP_GATE=true
+```
+
+Bootstrap cutover (USD warmup):
+1. `infra up` + Timescale migrations (via any processor or `oracle-bootstrap`).
+2. Run `oracle-bootstrap` until `bootstrap_state.status = READY` (seeds `sui_usd_1m` only).
+3. Start indexer (waits for READY when `ORACLE_BOOTSTRAP_GATE=true`) + processors.
+
+```bash
+RUST_LOG=info cargo run -p sui-processors --bin oracle-bootstrap
+psql "postgres://postgres:postgres@localhost:5433/sui_metrics" -c \
+  "SELECT * FROM bootstrap_state ORDER BY updated_at DESC LIMIT 5;"
+
+# Metrics (endpoint stays up for ORACLE_BOOTSTRAP_METRICS_HOLD_SECS after run)
+curl -s localhost:9190/metrics | grep oracle_bootstrap
 ```
 
 ---
 
 ## 5. Rebuild Docker images (after code changes)
 
+Requires BuildKit (default in Docker Desktop / Compose v2):
+
 ```bash
-# All processor binaries + rolloff-job
-docker compose -f infra/docker-compose.yml build catalog-worker swap-normalizer volume-engine ohlc-aggregator rolloff-job
+export DOCKER_BUILDKIT=1
+
+# Processors: one shared image (catalog-worker is enough — all bins built together)
+docker compose -f infra/docker-compose.yml build catalog-worker
 
 # API only
 docker compose -f infra/docker-compose.yml build api-service
 
-# Recreate services
-docker compose -f infra/docker-compose.yml up -d catalog-worker swap-normalizer volume-engine ohlc-aggregator api-service rolloff-job
+# Recreate services (no --build needed if image already built)
+docker compose -f infra/docker-compose.yml up -d catalog-worker swap-normalizer volume-engine api-service rolloff-job
 ```
 
 ---
@@ -131,7 +154,6 @@ docker compose -f infra/docker-compose.yml ps
 docker logs -f sui-indexer-local-catalog-worker-1
 docker logs -f sui-indexer-local-swap-normalizer-1
 docker logs -f sui-indexer-local-volume-engine-1
-docker logs -f sui-indexer-local-ohlc-aggregator-1
 docker logs -f sui-indexer-local-api-service-1
 docker logs -f sui-indexer-local-rolloff-job-1
 ```
@@ -153,9 +175,8 @@ curl -s 'localhost:8081/v1/tokens/0x2::sui::SUI' | jq
 
 curl -s 'localhost:8081/v1/tokens/0x2::sui::SUI/pools' | jq
 
-curl -s 'localhost:8081/v1/pools/{pool_id}/ohlc?interval=1h&from=2026-06-01T00:00:00Z&to=2026-06-21T00:00:00Z' | jq
-
 curl -s 'localhost:8081/v1/tokens/0x2::sui::SUI/swaps?limit=20' | jq
+curl -s 'localhost:8081/v1/tokens/0x2::sui::SUI/ohlc?interval=1h&from=2026-06-01T00:00:00Z&to=2026-06-21T00:00:00Z' | jq
 
 # Example memecoin (URL path uses catch-all for `::`)
 curl -s 'localhost:8081/v1/tokens/0x15a837268acd6d5f1f02784048e129393cff48b9cd55b6b2839cbd60e31faa27::dogtrain::DOGTRAIN' | jq
@@ -195,10 +216,36 @@ Set `VITE_API_BASE_URL=http://localhost:8081` if not using the dev proxy. API CO
 curl -s localhost:9184/metrics | head          # indexer (host)
 curl -s localhost:9185/metrics | head          # catalog-worker
 curl -s localhost:9186/metrics | head          # volume-engine
-curl -s localhost:9187/metrics | head          # ohlc-aggregator
 curl -s localhost:9188/metrics | grep api_     # api-service
 curl -s localhost:9189/metrics | grep rolloff  # rolloff-job
+curl -s localhost:9190/metrics | grep oracle_bootstrap  # oracle-bootstrap (during hold window)
 ```
+
+**Processor metrics (catalog-worker / swap-normalizer on `:9185`)**
+
+| Metric | Labels | Meaning |
+|--------|--------|---------|
+| `processor_catalog_rows_upserted_total` | `entity` | Pools, tokens, watchlist upserts |
+| `processor_catalog_skipped_total` | `reason` | Catalog messages skipped (e.g. missing coin types) |
+| `processor_swap_normalized_total` | `protocol` | Swaps published to `dex.swap.normalized.v1` |
+| `processor_swap_skipped_total` | `reason` | Permanent skip: `bad_parse`, `missing_pool_permanent`, `hydration_disabled` |
+| `processor_swap_deferred_total` | `reason` | Transient failure (`pool_rpc`, `metadata_rpc`, `db_error`, `oracle_missing`) |
+| `processor_swap_defer_retries_total` | — | In-process retries before offset left uncommitted |
+| `processor_pool_hydrated_total` | `result` | Lazy pool hydration via gRPC: `ok`, `not_found`, `error` |
+| `processor_token_metadata_hydrated_total` | `result` | Token metadata hydration via gRPC |
+
+```bash
+curl -s localhost:9185/metrics | grep -E 'processor_catalog|processor_swap|processor_pool_hydrated'
+```
+
+**Oracle bootstrap (`:9190`, one-shot — scrape within `ORACLE_BOOTSTRAP_METRICS_HOLD_SECS`)**
+
+| Metric | Meaning |
+|--------|---------|
+| `oracle_bootstrap_checkpoints_scanned_total` | Checkpoints walked backward |
+| `oracle_bootstrap_swaps_matched_total` | SUI/USDC swaps on trusted pools |
+| `oracle_bootstrap_buckets_seeded_total` | Rows upserted into `sui_usd_1m` |
+| `oracle_bootstrap_last_run_success` | `1` = READY, `0` = FAILED |
 
 Prometheus UI: http://localhost:9090
 
@@ -325,9 +372,12 @@ docker compose -f infra/docker-compose.yml ps
 # 5. Recreate Kafka topics
 ./infra/kafka/create-topics.sh
 
+# 5.1 Init sui price
+RUST_LOG=info cargo run -p sui-processors --bin oracle-bootstrap
+
 # 6. Start processors + API (migrations run on startup)
 docker compose -f infra/docker-compose.yml --env-file .env up -d \
-  catalog-worker swap-normalizer volume-engine ohlc-aggregator api-service rolloff-job
+  catalog-worker swap-normalizer volume-engine api-service rolloff-job
 
 # 7. Restart indexer from FIRST_CHECKPOINT in .env
 RUST_LOG=info cargo run -p sui-token-indexer
@@ -364,7 +414,7 @@ Use when you only need to clear one layer. Stop the **host indexer** and the **p
 
 ```bash
 docker compose -f infra/docker-compose.yml stop \
-  catalog-worker swap-normalizer volume-engine ohlc-aggregator api-service rolloff-job
+  catalog-worker swap-normalizer volume-engine api-service rolloff-job
 ```
 
 #### Postgres (catalog — `sui_indexer`)
@@ -390,7 +440,7 @@ docker compose -f infra/docker-compose.yml --env-file .env up -d postgres
 
 #### TimescaleDB (hot metrics — `sui_metrics`)
 
-`swaps_fact`, `ohlc_*`, roll-off watermarks.
+`swaps_fact`, `token_ohlc_usd_*`, roll-off watermarks.
 
 ```bash
 psql "postgres://postgres:postgres@localhost:5433/sui_metrics" <<'SQL'
@@ -404,12 +454,12 @@ SQL
 Or recreate container:
 
 ```bash
-docker compose -f infra/docker-compose.yml stop timescaledb volume-engine ohlc-aggregator rolloff-job api-service
+docker compose -f infra/docker-compose.yml stop timescaledb volume-engine rolloff-job api-service
 docker rm -f sui-indexer-local-timescaledb-1
 docker compose -f infra/docker-compose.yml --env-file .env up -d timescaledb
 ```
 
-Restart `volume-engine` / `ohlc-aggregator` — they run Timescale migrations on boot.
+Restart `volume-engine` — it runs Timescale migrations on boot.
 
 #### ClickHouse (cold storage)
 
@@ -449,7 +499,7 @@ done
 Reset consumer groups without deleting topics (re-read from beginning):
 
 ```bash
-GROUPS=(catalog-worker swap-normalizer volume-engine ohlc-aggregator)
+GROUPS=(catalog-worker swap-normalizer volume-engine)
 
 for group in "${GROUPS[@]}"; do
   docker compose -f infra/docker-compose.yml exec -T kafka \
@@ -465,7 +515,7 @@ Requires processors **stopped** before `--execute`. Set `KAFKA_AUTO_OFFSET_RESET
 Or recreate Kafka container (nuclear for Kafka only):
 
 ```bash
-docker compose -f infra/docker-compose.yml stop kafka catalog-worker swap-normalizer volume-engine ohlc-aggregator kafka-ui
+docker compose -f infra/docker-compose.yml stop kafka catalog-worker swap-normalizer volume-engine kafka-ui
 docker rm -f sui-indexer-local-kafka-1
 docker compose -f infra/docker-compose.yml --env-file .env up -d kafka kafka-ui
 ./infra/kafka/create-topics.sh
@@ -491,7 +541,7 @@ docker compose -f infra/docker-compose.yml --env-file .env up -d redis
 
 ```bash
 docker compose -f infra/docker-compose.yml --env-file .env up -d \
-  catalog-worker swap-normalizer volume-engine ohlc-aggregator api-service rolloff-job
+  catalog-worker swap-normalizer volume-engine api-service rolloff-job
 
 RUST_LOG=info cargo run -p sui-token-indexer
 ```
@@ -499,8 +549,8 @@ RUST_LOG=info cargo run -p sui-token-indexer
 | Store        | What you lose                          | Re-filled by                          |
 |--------------|----------------------------------------|---------------------------------------|
 | Postgres     | Watermarks, tokens, pools              | Indexer + catalog-worker              |
-| TimescaleDB  | swaps_fact, ohlc, roll-off watermarks  | volume-engine, ohlc-aggregator        |
-| ClickHouse   | Cold swaps_fact, ohlc mirrors          | rolloff-job (aged data)               |
+| TimescaleDB  | swaps_fact, token_ohlc_usd_*, roll-off watermarks | volume-engine |
+| ClickHouse   | Cold swaps_fact, token_ohlc_usd_* mirrors       | rolloff-job (aged data) |
 | Kafka        | All topic messages, consumer offsets   | Indexer + processors (re-consume)     |
 | Redis        | token price/vol, pool TVL cache        | volume-engine (on new swaps)          |
 

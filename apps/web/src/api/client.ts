@@ -47,7 +47,7 @@ export function encodeCoinTypePath(coinType: string): string {
     .join("::");
 }
 
-export function tokenPath(coinType: string, suffix?: "pools" | "swaps"): string {
+export function tokenPath(coinType: string, suffix?: "pools" | "swaps" | "ohlc"): string {
   const encoded = encodeCoinTypePath(coinType);
   if (suffix) {
     return `/v1/tokens/${encoded}/${suffix}`;
@@ -92,13 +92,12 @@ export function fetchTokenSwaps(
   return request(`${tokenPath(coinType, "swaps")}${qs ? `?${qs}` : ""}`);
 }
 
-export function fetchPoolOhlc(
-  poolId: string,
+export function fetchTokenOhlc(
+  coinType: string,
   params: {
     interval: OhlcInterval;
     from: string;
     to: string;
-    base_coin_type?: string;
   },
 ): Promise<OhlcResponse> {
   const search = new URLSearchParams({
@@ -106,12 +105,7 @@ export function fetchPoolOhlc(
     from: params.from,
     to: params.to,
   });
-  if (params.base_coin_type) {
-    search.set("base_coin_type", params.base_coin_type);
-  }
-  return request(
-    `/v1/pools/${encodeURIComponent(poolId)}/ohlc?${search.toString()}`,
-  );
+  return request(`${tokenPath(coinType)}/ohlc?${search.toString()}`);
 }
 
 export { ApiError };

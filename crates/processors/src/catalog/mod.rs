@@ -4,7 +4,6 @@ use indexer_store::MessageEnvelope;
 use serde_json::Value;
 use tracing::warn;
 
-use crate::coin_type;
 use crate::metrics::ProcessorMetrics;
 use crate::store::CatalogStore;
 
@@ -117,6 +116,7 @@ pub async fn handle_token_metadata_message(
             creator,
             created_at_ms,
             first_seen_cp,
+            "indexer_metadata",
         )
         .await?;
 
@@ -133,13 +133,6 @@ pub fn validate_protocol_slug(slug: &str) -> Option<Protocol> {
 }
 
 pub fn log_skip(metrics: &ProcessorMetrics, reason: &str, detail: &str) {
-    metrics.swap_skipped.with_label_values(&[reason]).inc();
-    warn!(reason, detail, "Skipped catalog/normalizer message");
-}
-
-pub fn normalized_coin_types(coin_a: &str, coin_b: &str) -> (String, String) {
-    (
-        coin_type::normalize(coin_a),
-        coin_type::normalize(coin_b),
-    )
+    metrics.catalog_skipped.with_label_values(&[reason]).inc();
+    warn!(reason, detail, "Skipped catalog message");
 }

@@ -1,0 +1,46 @@
+---
+description: Route Sui, Move, PTB, ClickHouse, and indexer questions to project skills and MCP before answering
+alwaysApply: true
+---
+
+# Knowledge routing (MUST follow)
+
+## Before answering or writing code
+
+1. **Do not rely on training data alone** for Sui APIs, SDK methods, Move syntax, PTBs, or ClickHouse patterns.
+2. **Read the matching skill** from `.agents/skills/<name>/SKILL.md` before recommending APIs, writing code, or reviewing changes.
+3. Start every session by reading `.agents/skills/sui-indexer-router/SKILL.md` when the task touches Sui, Move, transactions, indexing, or ClickHouse.
+4. **Query MCP** `user-sui-knowledge-docs` → `search_sui_knowledge_sources` when unsure about API deprecation, SDK method names, or recent Sui changes.
+
+If skill content and training data conflict, **skill content wins**.
+
+## Skill routing table
+
+| Topic | Skill |
+|-------|-------|
+| Sui data access (gRPC vs GraphQL vs indexer vs archival) | `accessing-data` |
+| PTBs, transactions, `tx.moveCall`, sponsored txs | `ptbs` |
+| Move contracts, abilities, object model | `sui-move`, `sui-move-project`, `sui-object-model`, `modern-move-syntax`, `composable-move-functions` |
+| Move naming, tests, build, publish | `naming-conventions`, `move-unit-testing`, `sui-build`, `sui-publish`, `sui-cli`, `sui-client` |
+| Frontend / dapp-kit (`apps/web`) | `frontend-apps`, `accessing-data` |
+| Custom indexer (`crates/indexer`) | `accessing-data` → `indexers.md` |
+| ClickHouse schema, queries, ingestion (`crates/processors`) | `clickhouse-best-practices` |
+| Rust in `crates/` | `rust-best-practices` |
+| Docker / infra | `docker-patterns` |
+
+## File-scoped hints
+
+| Path | Read first |
+|------|------------|
+| `crates/indexer/**`, `crates/indexer-store/**` | `accessing-data`, `rust-best-practices` |
+| `crates/processors/**` | `clickhouse-best-practices`, `rust-best-practices` |
+| `crates/api-service/**` | `rust-best-practices`, `accessing-data` |
+| `apps/web/**` | `frontend-apps`, `accessing-data` |
+| `**/*.move` | `sui-move`, `modern-move-syntax`, `ptbs` |
+
+## Hard rules
+
+- **No JSON-RPC** for new code. Use gRPC or GraphQL RPC.
+- **No v1 SDK methods** (`client.getObject`, `client.getCoins`, `SuiClient` with JSON-RPC URL). Use v2 `client.core.*` on `SuiGrpcClient` or GraphQL RPC.
+- **Verify before recommending** Sui SDK APIs via MCP when the skill does not cover the exact method.
+- `examples/` is reference only. Production code lives in `crates/` and `apps/`.

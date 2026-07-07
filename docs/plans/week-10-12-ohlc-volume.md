@@ -1,6 +1,8 @@
-# Week 10–12 Runbook — OHLC + Volume (TimescaleDB + Redis)
+# Week 10–12 Runbook — Token USD OHLC + Volume (TimescaleDB + Redis)
 
-**Scope:** `volume-engine` + `ohlc-aggregator` consuming `dex.swap.normalized.v1`.
+**Scope:** `volume-engine` consuming `dex.swap.normalized.v1` — writes `swaps_fact`, `token_ohlc_usd_*` (all intervals), Redis cache, and `pool_liquidity`.
+
+Pool `ohlc_*` and `ohlc-aggregator` were removed (2026-07-05). Charts are TOKEN/USD only.
 
 ---
 
@@ -8,9 +10,9 @@
 
 | Decision | Source | Applied |
 |----------|--------|---------|
-| OHLC/volume outside indexer | [docs/02-system-architecture.md](../02-system-architecture.md) §5 | Independent Kafka consumer groups in `crates/processors` |
+| OHLC/volume outside indexer | [docs/02-system-architecture.md](../02-system-architecture.md) §5 | `volume-engine` Kafka consumer group |
 | Input topic | [docs/04-data-contracts.md](../04-data-contracts.md) §3 | Only `dex.swap.normalized.v1` |
-| Idempotency | §3 | `swaps_fact` PK `(time, tx_digest, event_seq, protocol)`; OHLC dedupe set per swap key |
+| Idempotency | §3 | `swaps_fact` PK; OHLC upsert on conflict per `(bucket, base_coin_type)` |
 | Event-first indexing | Architecture §4.6 | No checkpoint re-parse for volume/OHLC |
 | Storage split | §8 / §10 | `TIMESCALE_URL` for metrics; `DATABASE_URL` for catalog only |
 
@@ -18,7 +20,7 @@
 
 - Do **not** add OHLC/volume writes inside `crates/indexer` pipelines
 - Do **not** run catalog migrations against TimescaleDB
-- Every skip path increments `processor_volume_skipped_total` or `processor_ohlc_skipped_total`
+- Every skip path increments `processor_volume_skipped_total`
 
 ---
 
@@ -28,14 +30,12 @@
 docker compose -f infra/docker-compose.yml --env-file .env up -d
 bash infra/kafka/create-topics.sh
 
-cargo run -p sui-token-indexer
 cargo run -p sui-processors --bin catalog-worker
 cargo run -p sui-processors --bin swap-normalizer
 cargo run -p sui-processors --bin volume-engine
-cargo run -p sui-processors --bin ohlc-aggregator
 ```
 
-**Backfill:** `KAFKA_AUTO_OFFSET_RESET=earliest`. Start normalizer before volume/OHLC workers.
+**Backfill:** `KAFKA_AUTO_OFFSET_RESET=earliest`. Start normalizer before volume-engine.
 
 ---
 
@@ -46,9 +46,8 @@ cargo run -p sui-processors --bin ohlc-aggregator
 | `TIMESCALE_URL` | — | TimescaleDB (port 5433 local) |
 | `REDIS_URL` | `redis://localhost:6379` | Hot cache |
 | `VOLUME_ENGINE_CONSUMER_GROUP` | `volume-engine` | Kafka group |
-| `OHLC_AGGREGATOR_CONSUMER_GROUP` | `ohlc-aggregator` | Kafka group |
+| `VOLUME_ENGINE_WORKERS` | `6` | Parallel consumers |
 | `VOLUME_METRICS_ADDRESS` | `0.0.0.0:9186` | volume-engine metrics |
-| `OHLC_METRICS_ADDRESS` | `0.0.0.0:9187` | ohlc-aggregator metrics |
 
 ---
 
@@ -56,32 +55,31 @@ cargo run -p sui-processors --bin ohlc-aggregator
 
 ```bash
 psql "$TIMESCALE_URL" -c "SELECT count(*) FROM swaps_fact;"
-psql "$TIMESCALE_URL" -c "SELECT * FROM ohlc_1m ORDER BY bucket DESC LIMIT 5;"
+psql "$TIMESCALE_URL" -c "SELECT * FROM token_ohlc_usd_1m ORDER BY bucket DESC LIMIT 5;"
 psql "$TIMESCALE_URL" -c "SELECT * FROM pool_liquidity ORDER BY time DESC LIMIT 5;"
-psql "$TIMESCALE_URL" -c "SELECT * FROM token_volume_1h ORDER BY bucket DESC LIMIT 5;"
 ```
 
 ---
 
-## 4. Verify Redis
+## 4. Metrics
 
 ```bash
-redis-cli GET 'token:0x2::sui::SUI:price'
-redis-cli GET 'token:0x...::token::TKN:vol:24h'
-redis-cli GET 'pool:0x...:tvl'
+curl -s localhost:9186/metrics | grep processor_token_ohlc_usd_upserts
+curl -s localhost:9186/metrics | grep processor_swaps_fact_inserted
 ```
+
+| Metric | Labels | Meaning |
+|--------|--------|---------|
+| `processor_token_ohlc_usd_upserts_total` | `interval` | Token USD OHLC buckets upserted |
+| `processor_swaps_fact_inserted_total` | — | New swap rows |
+| `processor_volume_skipped_total` | `reason` | Skipped swaps |
 
 ---
 
-## 5. Metrics
+## 5. API
 
 ```bash
-curl -s localhost:9186/metrics | grep processor_swaps_fact
-curl -s localhost:9187/metrics | grep processor_ohlc
+curl -s 'localhost:8081/v1/tokens/0x2::sui::SUI/ohlc?interval=1h&from=2026-06-01T00:00:00Z&to=2026-06-21T00:00:00Z' | jq
 ```
 
----
-
-## 6. TVL estimate (swap_event)
-
-`pool_liquidity.tvl_quote` ≈ `vault_quote_decimal + vault_base_decimal * price_quote_per_base` using 9-decimal default scaling on vault raw amounts. Phase 3 improves via pool snapshots.
+Cold path (> `HOT_STORAGE_DAYS`): ClickHouse `token_ohlc_usd_{interval}` via rolloff-job.

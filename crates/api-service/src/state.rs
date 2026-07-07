@@ -21,6 +21,20 @@ struct VolCache {
     tx_count: i64,
 }
 
+#[derive(Debug, Deserialize)]
+struct PriceUsdCache {
+    price_usd: String,
+    source_type: Option<String>,
+    confidence_score: Option<String>,
+    is_stale: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VolUsdCache {
+    volume_usd: String,
+    tx_count: i64,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub catalog: CatalogStore,
@@ -119,5 +133,37 @@ impl AppState {
         }
         let parsed: TvlCache = serde_json::from_str(&raw)?;
         Ok(Some(parsed.tvl_quote))
+    }
+
+    pub async fn redis_price_usd(
+        &self,
+        coin_type: &str,
+    ) -> Result<Option<(String, Option<String>, Option<String>, bool)>> {
+        let key = format!("token:{coin_type}:price:usd");
+        let mut conn = self.redis_conn().await?;
+        let raw: Option<String> = conn.get(&key).await?;
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        let parsed: PriceUsdCache = serde_json::from_str(&raw)?;
+        self.metrics.cache_hits.with_label_values(&["redis"]).inc();
+        Ok(Some((
+            parsed.price_usd,
+            parsed.source_type,
+            parsed.confidence_score,
+            parsed.is_stale.unwrap_or(false),
+        )))
+    }
+
+    pub async fn redis_vol_usd(&self, coin_type: &str) -> Result<Option<(String, i64)>> {
+        let key = format!("token:{coin_type}:vol:24h:usd");
+        let mut conn = self.redis_conn().await?;
+        let raw: Option<String> = conn.get(&key).await?;
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        let parsed: VolUsdCache = serde_json::from_str(&raw)?;
+        self.metrics.cache_hits.with_label_values(&["redis"]).inc();
+        Ok(Some((parsed.volume_usd, parsed.tx_count)))
     }
 }

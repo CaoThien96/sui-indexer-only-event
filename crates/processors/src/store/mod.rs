@@ -17,6 +17,9 @@ pub mod schema;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
+/// Serializes catalog migrations across concurrent container restarts.
+const CATALOG_MIGRATION_LOCK_ID: i64 = 748_301_923;
+
 #[derive(Clone)]
 pub struct CatalogStore {
     pool: Pool<AsyncPgConnection>,
@@ -59,19 +62,39 @@ impl CatalogStore {
     }
 
     pub async fn run_migrations(&self) -> anyhow::Result<()> {
-        let conn = self.pool.dedicated_connection().await?;
+        let mut conn = self.pool.dedicated_connection().await?;
+        diesel::sql_query("SELECT pg_advisory_lock($1)")
+            .bind::<diesel::sql_types::BigInt, _>(CATALOG_MIGRATION_LOCK_ID)
+            .execute(&mut conn)
+            .await
+            .map_err(|e| anyhow::anyhow!("catalog migration lock failed: {e:?}"))?;
+
         let mut wrapper: AsyncConnectionWrapper<AsyncPgConnection> =
             AsyncConnectionWrapper::from(conn);
 
         tokio::task::spawn_blocking(move || {
-            wrapper
-                .run_pending_migrations(MIGRATIONS)
-                .map(|_| ())
-                .map_err(|e| anyhow::anyhow!("catalog migration failed: {e:?}"))
+            match wrapper.run_pending_migrations(MIGRATIONS) {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    let msg = format!("{e:?}");
+                    let display = e.to_string();
+                    if (msg.contains("UniqueViolation") || display.contains("UniqueViolation"))
+                        && (msg.contains("__diesel_schema_migrations")
+                            || display.contains("__diesel_schema_migrations"))
+                    {
+                        tracing::info!(
+                            "catalog migration already recorded by concurrent instance; continuing"
+                        );
+                        Ok(())
+                    } else {
+                        Err(anyhow::anyhow!("catalog migration failed: {e:?}"))
+                    }
+                }
+            }
+            // dedicated connection dropped with wrapper → advisory lock released
         })
         .await
         .map_err(|e| anyhow::anyhow!("migration task join failed: {e}"))??;
-
         Ok(())
     }
 
@@ -114,13 +137,14 @@ impl CatalogStore {
         creator: Option<&str>,
         created_at_ms: Option<i64>,
         first_seen_cp: Option<i64>,
+        metadata_source: &str,
     ) -> anyhow::Result<()> {
         let coin_type = coin_type::normalize(coin_type);
         let mut conn = self.get_connection().await?;
 
         diesel::sql_query(
-            "INSERT INTO tokens (coin_type, name, symbol, decimals, description, image_url, creator, created_at_ms, first_seen_cp, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+            "INSERT INTO tokens (coin_type, name, symbol, decimals, description, image_url, creator, created_at_ms, first_seen_cp, metadata_source, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
              ON CONFLICT (coin_type) DO UPDATE SET
                name = COALESCE(EXCLUDED.name, tokens.name),
                symbol = COALESCE(EXCLUDED.symbol, tokens.symbol),
@@ -130,6 +154,10 @@ impl CatalogStore {
                creator = COALESCE(EXCLUDED.creator, tokens.creator),
                created_at_ms = COALESCE(tokens.created_at_ms, EXCLUDED.created_at_ms),
                first_seen_cp = LEAST(COALESCE(tokens.first_seen_cp, EXCLUDED.first_seen_cp), COALESCE(EXCLUDED.first_seen_cp, tokens.first_seen_cp)),
+               metadata_source = CASE
+                 WHEN tokens.metadata_source = 'indexer_metadata' THEN 'indexer_metadata'
+                 ELSE COALESCE(EXCLUDED.metadata_source, tokens.metadata_source)
+               END,
                updated_at = now()",
         )
         .bind::<diesel::sql_types::Text, _>(&coin_type)
@@ -141,6 +169,7 @@ impl CatalogStore {
         .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(creator)
         .bind::<diesel::sql_types::Nullable<diesel::sql_types::BigInt>, _>(created_at_ms)
         .bind::<diesel::sql_types::Nullable<diesel::sql_types::BigInt>, _>(first_seen_cp)
+        .bind::<diesel::sql_types::Text, _>(metadata_source)
         .execute(&mut conn)
         .await?;
 
@@ -152,8 +181,16 @@ impl CatalogStore {
         if coin_type == coin_type::SUI_COIN_TYPE {
             return Ok(());
         }
-        self.upsert_token(&coin_type, None, None, 9, None, None, None, None, None)
-            .await
+        let mut conn = self.get_connection().await?;
+        diesel::sql_query(
+            "INSERT INTO tokens (coin_type, decimals, metadata_source, updated_at)
+             VALUES ($1, 9, 'stub', now())
+             ON CONFLICT (coin_type) DO NOTHING",
+        )
+        .bind::<diesel::sql_types::Text, _>(&coin_type)
+        .execute(&mut conn)
+        .await?;
+        Ok(())
     }
 
     pub async fn upsert_pool(
@@ -167,11 +204,7 @@ impl CatalogStore {
         created_tx: Option<&str>,
         created_cp: Option<i64>,
     ) -> anyhow::Result<bool> {
-        let coin_type_a = coin_type::normalize(coin_type_a);
-        let coin_type_b = coin_type::normalize(coin_type_b);
-
-        self.ensure_token_stub(&coin_type_a).await?;
-        self.ensure_token_stub(&coin_type_b).await?;
+        let (coin_type_a, coin_type_b) = self.prepare_pool_coins(coin_type_a, coin_type_b).await?;
 
         let mut conn = self.get_connection().await?;
         let inserted = diesel::insert_into(pools::table)
@@ -185,6 +218,7 @@ impl CatalogStore {
                 pools::created_tx.eq(created_tx),
                 pools::created_cp.eq(created_cp),
                 pools::is_active.eq(true),
+                pools::discovery_source.eq("pool_create"),
             ))
             .on_conflict(pools::pool_id)
             .do_nothing()
@@ -192,6 +226,47 @@ impl CatalogStore {
             .await?;
 
         Ok(inserted > 0)
+    }
+
+    pub async fn upsert_pool_hydrated(
+        &self,
+        pool_id: &str,
+        protocol: &str,
+        coin_type_a: &str,
+        coin_type_b: &str,
+        first_seen_cp: Option<i64>,
+        first_seen_ms: Option<i64>,
+    ) -> anyhow::Result<()> {
+        let (coin_type_a, coin_type_b) = self.prepare_pool_coins(coin_type_a, coin_type_b).await?;
+
+        let mut conn = self.get_connection().await?;
+        diesel::sql_query(
+            "INSERT INTO pools (pool_id, protocol, coin_type_a, coin_type_b, created_at_ms, created_cp, is_active, discovery_source)
+             VALUES ($1, $2, $3, $4, $5, $6, true, 'swap_hydration')
+             ON CONFLICT (pool_id) DO NOTHING",
+        )
+        .bind::<diesel::sql_types::Text, _>(pool_id)
+        .bind::<diesel::sql_types::Text, _>(protocol)
+        .bind::<diesel::sql_types::Text, _>(&coin_type_a)
+        .bind::<diesel::sql_types::Text, _>(&coin_type_b)
+        .bind::<diesel::sql_types::Nullable<diesel::sql_types::BigInt>, _>(first_seen_ms)
+        .bind::<diesel::sql_types::Nullable<diesel::sql_types::BigInt>, _>(first_seen_cp)
+        .execute(&mut conn)
+        .await?;
+
+        Ok(())
+    }
+
+    async fn prepare_pool_coins(
+        &self,
+        coin_type_a: &str,
+        coin_type_b: &str,
+    ) -> anyhow::Result<(String, String)> {
+        let coin_type_a = coin_type::normalize(coin_type_a);
+        let coin_type_b = coin_type::normalize(coin_type_b);
+        self.ensure_token_stub(&coin_type_a).await?;
+        self.ensure_token_stub(&coin_type_b).await?;
+        Ok((coin_type_a, coin_type_b))
     }
 
     pub async fn seed_watchlist(&self, coin_type: &str, source: &str) -> anyhow::Result<bool> {
@@ -239,18 +314,6 @@ impl CatalogStore {
         }))
     }
 
-    pub async fn get_token_decimals(&self, coin_type: &str) -> anyhow::Result<Option<i16>> {
-        let coin_type = coin_type::normalize(coin_type);
-        let mut conn = self.get_connection().await?;
-        tokens::table
-            .filter(tokens::coin_type.eq(&coin_type))
-            .select(tokens::decimals)
-            .first::<i16>(&mut conn)
-            .await
-            .optional()
-            .map_err(Into::into)
-    }
-
     pub async fn get_token(&self, coin_type: &str) -> anyhow::Result<Option<TokenRow>> {
         let coin_type = coin_type::normalize(coin_type);
         let mut conn = self.get_connection().await?;
@@ -262,18 +325,27 @@ impl CatalogStore {
                 tokens::symbol,
                 tokens::decimals,
                 tokens::image_url,
+                tokens::metadata_source,
             ))
-            .first::<(String, Option<String>, Option<String>, i16, Option<String>)>(&mut conn)
+            .first::<(
+                String,
+                Option<String>,
+                Option<String>,
+                i16,
+                Option<String>,
+                String,
+            )>(&mut conn)
             .await
             .optional()?;
 
         Ok(row.map(
-            |(coin_type, name, symbol, decimals, image_url)| TokenRow {
+            |(coin_type, name, symbol, decimals, image_url, metadata_source)| TokenRow {
                 coin_type,
                 name,
                 symbol,
                 decimals,
                 image_url,
+                metadata_source,
             },
         ))
     }
@@ -432,6 +504,7 @@ pub struct TokenRow {
     pub symbol: Option<String>,
     pub decimals: i16,
     pub image_url: Option<String>,
+    pub metadata_source: String,
 }
 
 #[derive(Debug, Clone)]

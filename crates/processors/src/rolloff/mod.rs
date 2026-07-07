@@ -6,10 +6,20 @@ use chrono::{Duration as ChronoDuration, Utc};
 use tracing::{error, info};
 
 use crate::clickhouse::{
-    self, ChOhlcRow, ChSwapRow, ClickHouseConfig, create_client,
+    self, ChSwapRow, ChTokenOhlcUsdRow, ClickHouseConfig, create_client,
 };
 use crate::metrics::RolloffMetrics;
-use crate::timescale::{RolloffOhlcRow, RolloffSwapRow, TimescaleStore};
+use crate::timescale::{RolloffSwapRow, RolloffTokenOhlcUsdRow, TimescaleStore};
+
+const TOKEN_OHLC_USD_TABLES: &[&str] = &[
+    "token_ohlc_usd_1m",
+    "token_ohlc_usd_5m",
+    "token_ohlc_usd_15m",
+    "token_ohlc_usd_30m",
+    "token_ohlc_usd_1h",
+    "token_ohlc_usd_4h",
+    "token_ohlc_usd_24h",
+];
 
 pub struct RolloffJob {
     timescale: TimescaleStore,
@@ -49,7 +59,9 @@ impl RolloffJob {
     pub async fn run_once(&self) -> Result<()> {
         let cutoff = Utc::now() - ChronoDuration::days(self.hot_storage_days);
         self.roll_table_swaps(cutoff).await?;
-        self.roll_table_ohlc(cutoff).await?;
+        for table in TOKEN_OHLC_USD_TABLES {
+            self.roll_token_ohlc_usd(table, cutoff).await?;
+        }
         Ok(())
     }
 
@@ -85,8 +97,11 @@ impl RolloffJob {
         Ok(())
     }
 
-    async fn roll_table_ohlc(&self, cutoff: chrono::DateTime<Utc>) -> Result<()> {
-        let table = "ohlc_1m";
+    async fn roll_token_ohlc_usd(
+        &self,
+        table: &str,
+        cutoff: chrono::DateTime<Utc>,
+    ) -> Result<()> {
         let watermark = self.timescale.get_rolloff_watermark(table).await?;
         if watermark >= cutoff {
             return Ok(());
@@ -94,16 +109,17 @@ impl RolloffJob {
 
         let rows = self
             .timescale
-            .fetch_ohlc_for_rolloff(watermark, cutoff, self.batch_size)
+            .fetch_token_ohlc_usd_for_rolloff(table, watermark, cutoff, self.batch_size)
             .await?;
         if rows.is_empty() {
             return Ok(());
         }
 
-        let ch_rows: Vec<ChOhlcRow> = rows.iter().map(ohlc_to_ch).collect();
-        if let Err(e) = clickhouse::insert_ohlc(&self.clickhouse, &ch_rows).await {
+        let ch_rows: Vec<ChTokenOhlcUsdRow> = rows.iter().map(token_ohlc_usd_to_ch).collect();
+        if let Err(e) = clickhouse::insert_token_ohlc_usd(&self.clickhouse, table, &ch_rows).await
+        {
             self.metrics.errors.with_label_values(&[table]).inc();
-            error!(error = %e, "Failed to insert ohlc into ClickHouse");
+            error!(error = %e, table, "Failed to insert token OHLC USD into ClickHouse");
             return Err(e);
         }
 
@@ -113,7 +129,7 @@ impl RolloffJob {
             .rows
             .with_label_values(&[table])
             .inc_by(rows.len() as u64);
-        info!(table, count = rows.len(), ?last_time, "Rolled off ohlc");
+        info!(table, count = rows.len(), ?last_time, "Rolled off token OHLC USD");
         Ok(())
     }
 
@@ -139,23 +155,23 @@ fn swap_to_ch(row: &RolloffSwapRow) -> ChSwapRow {
         amount_base: row.amount_base.clone(),
         amount_quote: row.amount_quote.clone(),
         price_quote_per_base: row.price_quote_per_base.clone(),
+        amount_usd: row.amount_usd.clone(),
+        price_usd_per_base: row.price_usd_per_base.clone(),
         fee_amount: row.fee_amount.clone(),
         sender: row.sender.clone(),
         checkpoint_seq: row.checkpoint_seq,
     }
 }
 
-fn ohlc_to_ch(row: &RolloffOhlcRow) -> ChOhlcRow {
-    ChOhlcRow {
+fn token_ohlc_usd_to_ch(row: &RolloffTokenOhlcUsdRow) -> ChTokenOhlcUsdRow {
+    ChTokenOhlcUsdRow {
         bucket: row.bucket,
-        pool_id: row.pool_id.clone(),
         base_coin_type: row.base_coin_type.clone(),
-        quote_coin_type: row.quote_coin_type.clone(),
-        open: row.open.clone(),
-        high: row.high.clone(),
-        low: row.low.clone(),
-        close: row.close.clone(),
-        volume_quote: row.volume_quote.clone(),
+        open_usd: row.open_usd.clone(),
+        high_usd: row.high_usd.clone(),
+        low_usd: row.low_usd.clone(),
+        close_usd: row.close_usd.clone(),
+        volume_usd: row.volume_usd.clone(),
         trade_count: row.trade_count,
     }
 }

@@ -18,6 +18,8 @@ pub struct NormalizedSwap {
     pub amount_base: Decimal,
     pub amount_quote: Decimal,
     pub price_quote_per_base: Decimal,
+    pub price_usd_per_base: Option<Decimal>,
+    pub amount_usd: Option<Decimal>,
     pub fee_amount: Option<Decimal>,
     pub vault_a_raw: Option<String>,
     pub vault_b_raw: Option<String>,
@@ -41,6 +43,8 @@ pub fn parse_normalized_swap(envelope: &MessageEnvelope) -> Result<NormalizedSwa
     let amount_base = decimal_field(p, "amount_base_decimal")?;
     let amount_quote = decimal_field(p, "amount_quote_decimal")?;
     let price_quote_per_base = decimal_field(p, "price_quote_per_base")?;
+    let price_usd_per_base = optional_decimal_field(p, "price_usd_per_base").ok();
+    let amount_usd = optional_decimal_field(p, "amount_usd").ok();
     let timestamp_ms = p
         .get("timestamp_ms")
         .and_then(Value::as_i64)
@@ -75,6 +79,8 @@ pub fn parse_normalized_swap(envelope: &MessageEnvelope) -> Result<NormalizedSwa
         amount_base,
         amount_quote,
         price_quote_per_base,
+        price_usd_per_base,
+        amount_usd,
         fee_amount,
         vault_a_raw,
         vault_b_raw,

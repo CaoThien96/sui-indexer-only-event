@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 indexer-store = { path = "../indexer-store" }
 event-bindings = { path = "../event-bindings" }
+sui-processors = { path = "../processors" }
 sui-indexer-alt-framework.workspace = true
 sui-indexer-alt-metrics.workspace = true
 tokio.workspace = true

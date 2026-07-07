@@ -15,12 +15,13 @@ scrape_configs:
   - job_name: sui-volume-engine
     static_configs:
       - targets: ["host.docker.internal:9186"]
-  - job_name: sui-ohlc-aggregator
-    static_configs:
-      - targets: ["host.docker.internal:9187"]
   - job_name: sui-api-service
     static_configs:
       - targets: ["host.docker.internal:9188"]
   - job_name: sui-rolloff-job
     static_configs:
       - targets: ["host.docker.internal:9189"]
+  - job_name: sui-oracle-bootstrap
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["host.docker.internal:9190"]

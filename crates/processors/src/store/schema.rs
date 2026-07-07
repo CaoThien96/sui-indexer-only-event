@@ -21,6 +21,7 @@ diesel::table! {
         created_at_ms -> Nullable<Int8>,
         first_seen_cp -> Nullable<Int8>,
         updated_at -> Timestamptz,
+        metadata_source -> Text,
     }
 }
 
@@ -35,6 +36,7 @@ diesel::table! {
         created_tx -> Nullable<Text>,
         created_cp -> Nullable<Int8>,
         is_active -> Bool,
+        discovery_source -> Text,
     }
 }
 

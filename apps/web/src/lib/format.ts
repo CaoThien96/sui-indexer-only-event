@@ -33,9 +33,24 @@ export function isoRange(hours: number): { from: string; to: string } {
 }
 
 export const RANGE_PRESETS = [
+  { label: "1h", hours: 1 },
+  { label: "4h", hours: 4 },
+  { label: "12h", hours: 12 },
   { label: "24h", hours: 24 },
   { label: "7d", hours: 24 * 7 },
   { label: "30d", hours: 24 * 30 },
 ] as const;
 
-export const OHLC_INTERVALS = ["1h", "4h", "24h"] as const;
+export const OHLC_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "24h"] as const;
+
+export const MAX_RANGE_HOURS: Record<string, number> = {
+  // 1m must allow the same 7d window as 5m — otherwise tokens with no trades in the
+  // last 24h show an empty 1m chart while coarser intervals still have bars.
+  "1m": 24 * 7,
+  "5m": 24 * 7,
+  "15m": 24 * 7,
+  "30m": 24 * 30,
+  "1h": 24 * 30,
+  "4h": 24 * 30,
+  "24h": 24 * 30,
+};

@@ -1,5 +1,18 @@
 name: sui-indexer-local
 
+# One image, six entrypoints — avoids rebuilding the same Dockerfile per service.
+x-processors-image: &processors-image
+  image: sui-indexer-processors:latest
+  build:
+    context: ..
+    dockerfile: infra/Dockerfile.processors
+
+# Override .env for processor containers — slow DB handlers must not trip 5m max.poll.interval.
+x-processors-kafka-env: &processors-kafka-env
+  KAFKA_MAX_POLL_INTERVAL_MS: "900000"
+  KAFKA_SESSION_TIMEOUT_MS: "180000"
+  KAFKA_HEARTBEAT_INTERVAL_MS: "3000"
+
 services:
   postgres:
     image: postgres:16
@@ -38,6 +51,9 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_NUM_PARTITIONS: 6
+      KAFKA_HEAP_OPTS: "-Xmx1024m -Xms512m"
+      KAFKA_NUM_NETWORK_THREADS: 8
+      KAFKA_NUM_IO_THREADS: 8
     healthcheck:
       test:
         [
@@ -70,16 +86,16 @@ services:
       - "host.docker.internal:host-gateway"
 
   catalog-worker:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile.processors
+    <<: *processors-image
     env_file:
       - ../.env
     environment:
+      <<: *processors-kafka-env
       KAFKA_BROKERS: kafka:29092
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
     command: ["catalog-worker"]
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,18 +105,25 @@ services:
       - "host.docker.internal:host-gateway"
 
   swap-normalizer:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile.processors
+    <<: *processors-image
     env_file:
       - ../.env
     environment:
+      <<: *processors-kafka-env
       KAFKA_BROKERS: kafka:29092
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
+      TIMESCALE_HOST: timescaledb
+      TIMESCALE_PORT: "5432"
+      TIMESCALE_URL: postgres://postgres:postgres@timescaledb:5432/sui_metrics
+      SUI_GRPC_URL: ${STREAMING_URL:-https://fullnode.mainnet.sui.io:443}
+      SWAP_NORMALIZER_WORKERS: ${SWAP_NORMALIZER_WORKERS:-4}
     command: ["swap-normalizer"]
+    restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      timescaledb:
         condition: service_healthy
       kafka:
         condition: service_healthy
@@ -137,47 +160,47 @@ services:
       timeout: 5s
       retries: 10
 
-  volume-engine:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile.processors
+  oracle-bootstrap:
+    <<: *processors-image
     env_file:
       - ../.env
     environment:
+      TIMESCALE_HOST: timescaledb
+      TIMESCALE_PORT: "5432"
+      TIMESCALE_URL: postgres://postgres:postgres@timescaledb:5432/sui_metrics
+      SUI_ARCHIVAL_GRPC_URL: ${SUI_ARCHIVAL_GRPC_URL:-https://archive.mainnet.sui.io:443}
+      REMOTE_STORE_URL: ${REMOTE_STORE_URL:-https://checkpoints.mainnet.sui.io}
+      ORACLE_BOOTSTRAP_METRICS_ADDRESS: ${ORACLE_BOOTSTRAP_METRICS_ADDRESS:-0.0.0.0:9190}
+      ORACLE_BOOTSTRAP_METRICS_HOLD_SECS: ${ORACLE_BOOTSTRAP_METRICS_HOLD_SECS:-30}
+    command: ["oracle-bootstrap"]
+    restart: "no"
+    depends_on:
+      timescaledb:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  volume-engine:
+    <<: *processors-image
+    env_file:
+      - ../.env
+    environment:
+      <<: *processors-kafka-env
       KAFKA_BROKERS: kafka:29092
       TIMESCALE_HOST: timescaledb
       TIMESCALE_PORT: "5432"
       TIMESCALE_URL: postgres://postgres:postgres@timescaledb:5432/sui_metrics
       REDIS_URL: redis://redis:6379
+      VOLUME_ENGINE_WORKERS: ${VOLUME_ENGINE_WORKERS:-6}
+      VOLUME_ROLLUP_REFRESH_SECS: ${VOLUME_ROLLUP_REFRESH_SECS:-60}
     command: ["volume-engine"]
+    restart: unless-stopped
     depends_on:
       kafka:
         condition: service_healthy
       timescaledb:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      swap-normalizer:
-        condition: service_started
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-  ohlc-aggregator:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile.processors
-    env_file:
-      - ../.env
-    environment:
-      KAFKA_BROKERS: kafka:29092
-      TIMESCALE_HOST: timescaledb
-      TIMESCALE_PORT: "5432"
-      TIMESCALE_URL: postgres://postgres:postgres@timescaledb:5432/sui_metrics
-    command: ["ohlc-aggregator"]
-    depends_on:
-      kafka:
-        condition: service_healthy
-      timescaledb:
         condition: service_healthy
       swap-normalizer:
         condition: service_started
@@ -225,9 +248,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   rolloff-job:
-    build:
-      context: ..
-      dockerfile: infra/Dockerfile.processors
+    <<: *processors-image
     env_file:
       - ../.env
     environment:

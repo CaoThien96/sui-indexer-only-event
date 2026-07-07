@@ -1,5 +1,4 @@
 mod health;
-mod pools;
 mod tokens;
 mod tokens_list;
 
@@ -26,7 +25,6 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health::health))
         .route("/v1/tokens", get(tokens_list::list_tokens))
         .route("/v1/tokens/{*rest}", get(tokens::token_dispatch))
-        .route("/v1/pools/{pool_id}/ohlc", get(pools::pool_ohlc))
         .layer(cors)
         .with_state(state)
 }

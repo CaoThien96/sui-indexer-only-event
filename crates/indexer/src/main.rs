@@ -1,5 +1,6 @@
 mod bootstrap;
 mod config;
+mod oracle_gate;
 mod pipelines;
 mod runtime_tuning;
 
@@ -9,6 +10,7 @@ use config::{
     AppArgs, kafka_client_id, log_indexer_args, log_metrics_endpoint, metrics_prefix_from_env,
     require_database_url, require_kafka_brokers,
 };
+use oracle_gate::wait_for_oracle_bootstrap;
 use runtime_tuning::{db_args, ingestion_config, sequential_config};
 use diesel_migrations::{EmbeddedMigrations, embed_migrations};
 use indexer_store::PostgresStore;
@@ -31,6 +33,8 @@ async fn main() -> Result<()> {
 
     let app_args = AppArgs::parse_with_env()?;
     let args = app_args.framework;
+
+    sui_processors::config::load_dotenv();
 
     log_metrics_endpoint(&args);
     log_indexer_args(&args.indexer_args);
@@ -85,6 +89,8 @@ async fn main() -> Result<()> {
     log_key_builtin_metrics(&runtime.indexer, dex_swap::NAME);
     log_key_builtin_metrics(&runtime.indexer, dex_pool::NAME);
     log_key_builtin_metrics(&runtime.indexer, token_metadata::NAME);
+
+    wait_for_oracle_bootstrap().await?;
 
     match runtime.run().await {
         Ok(()) | Err(Error::Terminated) => {

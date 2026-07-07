@@ -4,8 +4,6 @@ use std::str::FromStr;
 
 use crate::coin_type::{self, SUI_COIN_TYPE, USDC_COIN_TYPE};
 
-const Q64: u128 = 1u128 << 64;
-
 /// Assign quote/base per frozen product rules.
 pub fn assign_quote_base(coin_type_a: &str, coin_type_b: &str) -> (String, String, String) {
     let a = coin_type::normalize(coin_type_a);
@@ -59,41 +57,14 @@ pub fn raw_to_decimal(raw: &str, decimals: u32) -> Result<String> {
     Ok((value / scale).normalize().to_string())
 }
 
-/// Q64.64 sqrt price → price of coin_y per coin_x, adjusted for decimals.
-pub fn sqrt_price_to_quote_per_base(
-    sqrt_price_after: &str,
-    decimals_a: u32,
-    decimals_b: u32,
-    a_to_b: bool,
-    quote_is_a: bool,
-) -> Result<String> {
-    let sqrt = u128::from_str(sqrt_price_after).context("invalid sqrt_price")?;
-    let sqrt_f = Decimal::from(sqrt) / Decimal::from(Q64);
-    let price_y_per_x = sqrt_f * sqrt_f;
-
-    let decimal_adj = Decimal::from(10u64.pow(decimals_a))
-        / Decimal::from(10u64.pow(decimals_b));
-
-    let price_a_per_b = price_y_per_x * decimal_adj;
-    let price_b_per_a = if price_a_per_b.is_zero() {
-        Decimal::ZERO
-    } else {
-        Decimal::ONE / price_a_per_b
-    };
-
-    let price = if quote_is_a {
-        if a_to_b {
-            price_b_per_a
-        } else {
-            price_a_per_b
-        }
-    } else if a_to_b {
-        price_a_per_b
-    } else {
-        price_b_per_a
-    };
-
-    Ok(price.normalize().to_string())
+/// Execution price quote/base from decimal trade amounts (canonical for charts).
+pub fn price_from_trade_amounts(amount_quote_decimal: &str, amount_base_decimal: &str) -> Result<String> {
+    let quote = Decimal::from_str(amount_quote_decimal).context("invalid quote decimal")?;
+    let base = Decimal::from_str(amount_base_decimal).context("invalid base decimal")?;
+    if base.is_zero() {
+        anyhow::bail!("amount_base_decimal is zero");
+    }
+    Ok((quote / base).normalize().to_string())
 }
 
 #[cfg(test)]
@@ -148,16 +119,11 @@ mod tests {
     }
 
     #[test]
-    fn sqrt_price_produces_positive_decimal() {
-        let price = sqrt_price_to_quote_per_base(
-            "18446744073709551616", // 2^64
-            9,
-            9,
-            true,
-            true,
-        )
-        .unwrap();
-        assert!(!price.is_empty());
-        assert_ne!(price, "0");
+    fn price_from_trade_amounts_matches_execution_price() {
+        // STARBASE/SUI: ~25 SUI for ~1.5M tokens ≈ 0.000017 SUI per token
+        let price = price_from_trade_amounts("25.453951421", "1500529.141321119").unwrap();
+        assert!(price.starts_with("0.00001"));
+        let p = Decimal::from_str(&price).unwrap();
+        assert!(p < Decimal::ONE);
     }
 }

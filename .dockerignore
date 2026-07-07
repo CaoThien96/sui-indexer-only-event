@@ -1,0 +1,35 @@
+# Rust build artifacts (never send host target/ into the daemon)
+target/
+**/*.rs.bk
+
+# Frontend — not used by processor or api-service images
+apps/
+node_modules/
+dist/
+
+# Large trees not referenced by workspace Docker builds
+examples/
+docs/
+tools/
+
+# Git, IDE, agent artifacts
+.git/
+.cursor/
+.agents/
+
+# Local env and logs
+.env
+.env.*
+**/*.log
+**/*.pid
+indexer.log
+indexer.pid
+config/packages.toml
+
+# OS / editor noise
+.DS_Store
+**/.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/

@@ -28,6 +28,9 @@ export interface TokenDetailResponse {
   txns_24h: number | null;
   holder_count: string | null;
   pools_count: number;
+  source_type: string | null;
+  is_stale: boolean | null;
+  confidence_score: string | null;
 }
 
 export interface PoolSummary {
@@ -80,4 +83,4 @@ export interface ErrorResponse {
   error: string;
 }
 
-export type OhlcInterval = "1m" | "5m" | "1h" | "4h" | "24h";
+export type OhlcInterval = "1m" | "5m" | "15m" | "30m" | "1h" | "4h" | "24h";

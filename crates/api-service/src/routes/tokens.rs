@@ -9,8 +9,8 @@ use sui_processors::clickhouse;
 use sui_processors::timescale::SwapRow;
 
 use crate::dto::{
-    AmountQuote, ErrorResponse, PoolSummary, SwapDto, SwapsResponse,
-    TokenDetailResponse, TokenPoolsResponse,
+    AmountQuote, ErrorResponse, OhlcBarDto, PoolSummary, SwapDto, SwapsResponse,
+    TokenDetailResponse, TokenOhlcResponse, TokenPoolsResponse, normalize_ohlc_bars,
 };
 use crate::query_router::{route_query, StorageTarget};
 use crate::state::AppState;
@@ -33,7 +33,7 @@ pub async fn token_detail(
         Err(e) => return internal(route, &state, e),
     };
 
-    let (price_quote, volume_24h, txns_24h) =
+    let (price_quote, volume_24h, txns_24h, price_usd, source_type, is_stale, confidence_score) =
         match metrics_for_token(&state, &coin_type).await {
             Ok(v) => v,
             Err(e) => return internal(route, &state, e),
@@ -45,12 +45,15 @@ pub async fn token_detail(
         symbol: token.symbol,
         decimals: token.decimals,
         image_url: token.image_url,
-        price_usd: None,
+        price_usd,
         price_quote,
         volume_24h,
         txns_24h,
         holder_count: None,
         pools_count,
+        source_type,
+        is_stale: Some(is_stale),
+        confidence_score,
     })
     .into_response()
 }
@@ -87,17 +90,27 @@ pub async fn token_pools(
 }
 
 #[derive(Debug, Deserialize)]
-pub struct SwapsQuery {
+pub struct DispatchQuery {
     pub pool_id: Option<String>,
     pub limit: Option<i64>,
     pub cursor: Option<String>,
+    pub interval: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TokenOhlcQuery {
+    pub interval: String,
+    pub from: String,
+    pub to: String,
 }
 
 /// Coin types contain `::` and must be captured with a trailing catch-all segment.
 pub async fn token_dispatch(
     State(state): State<AppState>,
     axum::extract::Path(rest): axum::extract::Path<String>,
-    Query(query): Query<SwapsQuery>,
+    Query(query): Query<DispatchQuery>,
 ) -> Response {
     if let Some(coin) = rest.strip_suffix("/swaps") {
         let coin = coin.trim_end_matches('/');
@@ -107,13 +120,30 @@ pub async fn token_dispatch(
         let coin = coin.trim_end_matches('/');
         return token_pools(State(state), axum::extract::Path(coin.to_string())).await;
     }
+    if let Some(coin) = rest.strip_suffix("/ohlc") {
+        let coin = coin.trim_end_matches('/');
+        let ohlc_query = TokenOhlcQuery {
+            interval: query.interval.clone().unwrap_or_else(|| "1h".to_string()),
+            from: query
+                .from
+                .clone()
+                .unwrap_or_else(|| (Utc::now() - chrono::Duration::days(1)).to_rfc3339()),
+            to: query.to.clone().unwrap_or_else(|| Utc::now().to_rfc3339()),
+        };
+        return token_ohlc(
+            State(state),
+            axum::extract::Path(coin.to_string()),
+            Query(ohlc_query),
+        )
+        .await;
+    }
     token_detail(State(state), axum::extract::Path(rest)).await
 }
 
 pub async fn token_swaps(
     State(state): State<AppState>,
     axum::extract::Path(coin_type): axum::extract::Path<String>,
-    Query(query): Query<SwapsQuery>,
+    Query(query): Query<DispatchQuery>,
 ) -> Response {
     let coin_type = coin_type::normalize(&coin_type);
     let _route = "token_swaps";
@@ -205,7 +235,15 @@ pub async fn token_swaps(
 async fn metrics_for_token(
     state: &AppState,
     coin_type: &str,
-) -> anyhow::Result<(Option<AmountQuote>, Option<AmountQuote>, Option<i64>)> {
+) -> anyhow::Result<(
+    Option<AmountQuote>,
+    Option<AmountQuote>,
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    bool,
+    Option<String>,
+)> {
     let (price, quote) = if let Some((p, q)) = state.redis_price(coin_type).await? {
         (Some(p), Some(q))
     } else if let Some((p, q)) = state.timescale.latest_price_for_token(coin_type).await? {
@@ -218,20 +256,131 @@ async fn metrics_for_token(
         .zip(quote.clone())
         .map(|(amount, quote)| AmountQuote { amount, quote });
 
-    let (vol, txns) = if let Some((v, t)) = state.redis_vol(coin_type).await? {
-        (Some(v), Some(t))
+    let (vol, txns, vol_quote) = if let Some((v, t)) = state.redis_vol_usd(coin_type).await? {
+        (Some(v), Some(t), Some("USD".to_string()))
+    } else if let Some((v, t)) = state.redis_vol(coin_type).await? {
+        (Some(v), Some(t), None)
     } else {
         let (v, t) = state.timescale.sum_token_volume_24h(coin_type).await?;
-        (Some(v.to_string()), Some(t))
+        (Some(v.to_string()), Some(t), None)
     };
 
-    let quote_for_vol = quote.or_else(|| price_quote.as_ref().map(|p| p.quote.clone()));
+    let quote_for_vol = vol_quote.or_else(|| quote.or_else(|| price_quote.as_ref().map(|p| p.quote.clone())));
     let volume_24h = vol.zip(quote_for_vol).map(|(amount, quote)| AmountQuote {
         amount,
         quote,
     });
 
-    Ok((price_quote, volume_24h, txns))
+    let (price_usd, source_type, confidence_score, is_stale) =
+        if let Some((p, source, confidence, stale)) = state.redis_price_usd(coin_type).await? {
+            (Some(p), source, confidence, stale)
+        } else if let Some(p) = state.timescale.latest_price_usd_for_token(coin_type).await? {
+            (Some(p), Some("timescale".to_string()), Some("0.8".to_string()), false)
+        } else {
+            (None, None, None, true)
+        };
+
+    Ok((
+        price_quote,
+        volume_24h,
+        txns,
+        price_usd,
+        source_type,
+        is_stale,
+        confidence_score,
+    ))
+}
+
+pub async fn token_ohlc(
+    State(state): State<AppState>,
+    axum::extract::Path(coin_type): axum::extract::Path<String>,
+    Query(query): Query<TokenOhlcQuery>,
+) -> Response {
+    let coin_type = coin_type::normalize(&coin_type);
+    let from = match DateTime::parse_from_rfc3339(&query.from) {
+        Ok(dt) => dt.with_timezone(&Utc),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid from timestamp".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+    let to = match DateTime::parse_from_rfc3339(&query.to) {
+        Ok(dt) => dt.with_timezone(&Utc),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: "invalid to timestamp".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let target = route_query(from, to, state.hot_storage_days);
+    let mut raw_bars: Vec<OhlcBarDto> = Vec::new();
+
+    if matches!(target, StorageTarget::Hot | StorageTarget::Both) {
+        match state
+            .timescale
+            .query_token_ohlc_usd(&coin_type, &query.interval, from, to)
+            .await
+        {
+            Ok(rows) => {
+                raw_bars.extend(rows.into_iter().map(|r| OhlcBarDto {
+                    bucket: r.bucket.to_rfc3339(),
+                    open: r.open,
+                    high: r.high,
+                    low: r.low,
+                    close: r.close,
+                    volume_quote: r.volume_usd,
+                    trade_count: r.trade_count,
+                }));
+            }
+            Err(e) => return internal("token_ohlc", &state, e),
+        }
+    }
+
+    if matches!(target, StorageTarget::Cold | StorageTarget::Both) {
+        if let Some(table) = sui_processors::token_ohlc::token_ohlc_usd_table(&query.interval) {
+            if let Ok(rows) = clickhouse::query_token_ohlc_usd(
+                &state.clickhouse,
+                table,
+                &coin_type,
+                from,
+                to,
+            )
+            .await
+            {
+                raw_bars.extend(rows.into_iter().map(|r| OhlcBarDto {
+                    bucket: r.bucket.to_rfc3339(),
+                    open: r.open_usd,
+                    high: r.high_usd,
+                    low: r.low_usd,
+                    close: r.close_usd,
+                    volume_quote: r.volume_usd,
+                    trade_count: r.trade_count,
+                }));
+            }
+        }
+    }
+
+    raw_bars.sort_by(|a, b| a.bucket.cmp(&b.bucket));
+    raw_bars.dedup_by(|a, b| a.bucket == b.bucket);
+
+    let bars = normalize_ohlc_bars(raw_bars, &query.interval);
+
+    Json(TokenOhlcResponse {
+        coin_type,
+        interval: query.interval,
+        bars,
+    })
+    .into_response()
 }
 
 fn parse_cursor_time(cursor: &str) -> Option<DateTime<Utc>> {

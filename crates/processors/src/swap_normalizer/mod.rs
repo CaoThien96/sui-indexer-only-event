@@ -1,70 +1,194 @@
+mod hydration;
 mod price;
 mod protocol;
 
-pub use price::{assign_quote_base, map_amounts_to_base_quote, raw_to_decimal, sqrt_price_to_quote_per_base};
+pub use hydration::{PoolHydrator, defer_backoff};
+pub use price::{
+    assign_quote_base, map_amounts_to_base_quote, price_from_trade_amounts, raw_to_decimal,
+};
 pub use protocol::{ExtractedSwapFields, extract_swap_fields};
 
-use anyhow::{Context, Result};
-use indexer_store::{FactTopic, MessageEnvelope};
-use lru::LruCache;
-use serde_json::{Value, json};
 use std::num::NonZeroUsize;
+use std::str::FromStr;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+
+use anyhow::{Context, Result};
+use chrono::TimeZone;
+use indexer_store::{FactTopic, MessageEnvelope};
+use rust_decimal::Decimal;
+use serde_json::{Value, json};
+use tracing::warn;
 
 use crate::catalog::validate_protocol_slug;
 use crate::metrics::ProcessorMetrics;
-use crate::store::{CatalogStore, PoolRow};
+use crate::store::CatalogStore;
+use crate::sui_grpc::SuiGrpcClient;
+use crate::timescale::TimescaleStore;
+use crate::usd_enrichment::{UsdEnrichmentOutcome, enrich_swap_usd};
+
+use hydration::{DecimalsOutcome, PoolResolution};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeferReason {
+    PoolRpc,
+    MetadataRpc,
+    DbError,
+    OracleMissing,
+}
+
+impl DeferReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PoolRpc => "pool_rpc",
+            Self::MetadataRpc => "metadata_rpc",
+            Self::DbError => "db_error",
+            Self::OracleMissing => "oracle_missing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SkipReason {
+    MissingPoolPermanent,
+    BadParse,
+    HydrationDisabled,
+}
+
+impl SkipReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingPoolPermanent => "missing_pool_permanent",
+            Self::BadParse => "bad_parse",
+            Self::HydrationDisabled => "hydration_disabled",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum NormalizeOutcome {
+    Published(MessageEnvelope),
+    Deferred { reason: DeferReason },
+    SkippedPermanent { reason: SkipReason },
+}
+
+#[derive(Debug, Clone)]
+pub struct HydrationConfig {
+    pub enabled: bool,
+    pub pool_cache_size: usize,
+    pub defer_max_retries: u32,
+    pub defer_backoff_ms: u64,
+}
 
 pub struct SwapNormalizer {
-    store: CatalogStore,
+    hydrator: PoolHydrator,
+    timescale: TimescaleStore,
     metrics: Arc<ProcessorMetrics>,
-    pool_cache: Mutex<LruCache<String, PoolRow>>,
 }
 
 impl SwapNormalizer {
-    pub fn new(store: CatalogStore, metrics: Arc<ProcessorMetrics>) -> Self {
+    pub fn new(
+        catalog: CatalogStore,
+        timescale: TimescaleStore,
+        metrics: Arc<ProcessorMetrics>,
+        grpc: Arc<SuiGrpcClient>,
+        config: HydrationConfig,
+    ) -> Self {
+        let cache_size =
+            NonZeroUsize::new(config.pool_cache_size.max(1)).unwrap_or(NonZeroUsize::MIN);
         Self {
-            store,
+            hydrator: PoolHydrator::new(
+                catalog,
+                metrics.clone(),
+                grpc,
+                config,
+                lru::LruCache::new(cache_size),
+            ),
+            timescale,
             metrics,
-            pool_cache: Mutex::new(LruCache::new(NonZeroUsize::new(10_000).unwrap())),
         }
     }
 
-    pub async fn normalize(&self, envelope: &MessageEnvelope) -> Result<Option<MessageEnvelope>> {
+    pub async fn normalize(&self, envelope: &MessageEnvelope) -> Result<NormalizeOutcome> {
         let payload = &envelope.payload;
-        let protocol_slug = payload
-            .get("protocol")
-            .and_then(Value::as_str)
-            .context("swap missing protocol")?;
-        let protocol = validate_protocol_slug(protocol_slug)
-            .with_context(|| format!("unknown protocol `{protocol_slug}`"))?;
-
-        let parsed = payload
-            .get("parsed_json")
-            .context("swap missing parsed_json")?;
-        let fields = extract_swap_fields(protocol, parsed)?;
-
-        let pool = self.get_pool(&fields.pool_id).await?;
-        let Some(pool) = pool else {
-            self.metrics.swap_missing_pool.inc();
-            return Ok(None);
+        let protocol_slug = match payload.get("protocol").and_then(Value::as_str) {
+            Some(slug) => slug,
+            None => {
+                return Ok(NormalizeOutcome::SkippedPermanent {
+                    reason: SkipReason::BadParse,
+                });
+            }
+        };
+        let protocol = match validate_protocol_slug(protocol_slug) {
+            Some(p) => p,
+            None => {
+                return Ok(NormalizeOutcome::SkippedPermanent {
+                    reason: SkipReason::BadParse,
+                });
+            }
         };
 
-        let (base_coin_type, quote_coin_type, quote_type) =
+        let parsed = match payload.get("parsed_json") {
+            Some(v) => v,
+            None => {
+                return Ok(NormalizeOutcome::SkippedPermanent {
+                    reason: SkipReason::BadParse,
+                });
+            }
+        };
+        let fields = match extract_swap_fields(protocol, parsed) {
+            Ok(f) => f,
+            Err(_) => {
+                return Ok(NormalizeOutcome::SkippedPermanent {
+                    reason: SkipReason::BadParse,
+                });
+            }
+        };
+
+        let checkpoint_seq = payload
+            .get("checkpoint_sequence_number")
+            .and_then(Value::as_u64)
+            .map(|v| v as i64);
+        let timestamp_ms = payload
+            .get("timestamp_ms")
+            .and_then(Value::as_u64)
+            .map(|v| v as i64);
+
+        let pool = match self
+            .hydrator
+            .resolve_pool(
+                &fields.pool_id,
+                protocol_slug,
+                checkpoint_seq,
+                timestamp_ms,
+            )
+            .await?
+        {
+            PoolResolution::Found(pool) => pool,
+            PoolResolution::MissingPermanent(reason) => {
+                return Ok(NormalizeOutcome::SkippedPermanent { reason });
+            }
+            PoolResolution::Deferred(reason) => {
+                return Ok(NormalizeOutcome::Deferred { reason });
+            }
+        };
+
+        let (base_coin_type, quote_coin_type, _quote_type) =
             assign_quote_base(&pool.coin_type_a, &pool.coin_type_b);
 
-        let decimals_a = self.decimals_for(&pool.coin_type_a).await;
-        let decimals_b = self.decimals_for(&pool.coin_type_b).await;
-
-        let quote_is_a = quote_type == crate::coin_type::normalize(&pool.coin_type_a);
-        let price_quote_per_base = sqrt_price_to_quote_per_base(
-            &fields.sqrt_price_after,
-            decimals_a,
-            decimals_b,
-            fields.a_to_b,
-            quote_is_a,
-        )?;
+        let decimals_outcome = self
+            .hydrator
+            .resolve_pair_decimals(
+                &pool.coin_type_a,
+                &pool.coin_type_b,
+                checkpoint_seq,
+            )
+            .await?;
+        let (decimals_a, decimals_b) = match decimals_outcome {
+            DecimalsOutcome::Ready(a, b) => (a, b),
+            DecimalsOutcome::Deferred(reason) => {
+                return Ok(NormalizeOutcome::Deferred { reason });
+            }
+        };
 
         let (amount_base_raw, amount_quote_raw) = map_amounts_to_base_quote(
             fields.a_to_b,
@@ -86,6 +210,50 @@ impl SwapNormalizer {
             decimals_b
         };
 
+        let amount_base_decimal = raw_to_decimal(&amount_base_raw, base_decimals)
+            .context("amount_base_decimal")?;
+        let amount_quote_decimal = raw_to_decimal(&amount_quote_raw, quote_decimals)
+            .context("amount_quote_decimal")?;
+        let price_quote_per_base =
+            price_from_trade_amounts(&amount_quote_decimal, &amount_base_decimal)?;
+
+        let timestamp_ms = timestamp_ms.context("swap missing timestamp_ms")?;
+        let swap_time = chrono::Utc
+            .timestamp_millis_opt(timestamp_ms)
+            .single()
+            .context("invalid timestamp_ms")?;
+        let price_dec = Decimal::from_str(&price_quote_per_base).context("price_quote_per_base")?;
+        let amount_quote_dec =
+            Decimal::from_str(&amount_quote_decimal).context("amount_quote_decimal")?;
+
+        let usd_outcome = enrich_swap_usd(
+            &self.timescale,
+            &quote_coin_type,
+            price_dec,
+            amount_quote_dec,
+            swap_time,
+        )
+        .await?;
+
+        let usd_fields = match usd_outcome {
+            UsdEnrichmentOutcome::Enriched(usd) => Some(usd),
+            UsdEnrichmentOutcome::NotApplicable => None,
+            UsdEnrichmentOutcome::OracleMissing => {
+                self.metrics
+                    .swap_deferred
+                    .with_label_values(&[DeferReason::OracleMissing.as_str()])
+                    .inc();
+                warn!(
+                    swap_time = %swap_time,
+                    quote_coin_type = %quote_coin_type,
+                    "deferring swap: SUI/USD oracle missing for bucket"
+                );
+                return Ok(NormalizeOutcome::Deferred {
+                    reason: DeferReason::OracleMissing,
+                });
+            }
+        };
+
         let event_seq = payload
             .get("event_sequence_in_transaction")
             .and_then(Value::as_u64)
@@ -95,7 +263,7 @@ impl SwapNormalizer {
             .and_then(Value::as_str)
             .context("swap missing tx_digest")?;
 
-        let normalized = json!({
+        let mut normalized = json!({
             "protocol": protocol_slug,
             "pool_id": fields.pool_id,
             "coin_type_a": pool.coin_type_a,
@@ -113,8 +281,8 @@ impl SwapNormalizer {
             "base_coin_type": base_coin_type,
             "amount_base_raw": amount_base_raw,
             "amount_quote_raw": amount_quote_raw,
-            "amount_base_decimal": raw_to_decimal(&amount_base_raw, base_decimals)?,
-            "amount_quote_decimal": raw_to_decimal(&amount_quote_raw, quote_decimals)?,
+            "amount_base_decimal": amount_base_decimal,
+            "amount_quote_decimal": amount_quote_decimal,
             "vault_a_raw": fields.vault_a_raw,
             "vault_b_raw": fields.vault_b_raw,
             "checkpoint_sequence_number": payload.get("checkpoint_sequence_number"),
@@ -124,36 +292,28 @@ impl SwapNormalizer {
             "sender": payload.get("sender"),
         });
 
-        let message_id_key = format!("{tx_digest}:{event_seq}:{protocol_slug}:{}", FactTopic::SwapNormalized.as_str());
-        Ok(Some(MessageEnvelope::new(&message_id_key, normalized)))
-    }
-
-    async fn get_pool(&self, pool_id: &str) -> Result<Option<PoolRow>> {
-        {
-            let cache = self.pool_cache.lock().await;
-            if let Some(row) = cache.peek(pool_id) {
-                return Ok(Some(row.clone()));
-            }
+        if let Some(usd) = usd_fields {
+            let obj = normalized
+                .as_object_mut()
+                .context("normalized payload must be object")?;
+            obj.insert(
+                "price_usd_per_base".to_string(),
+                json!(usd.price_usd_per_base.to_string()),
+            );
+            obj.insert(
+                "amount_usd".to_string(),
+                json!(usd.amount_usd.to_string()),
+            );
         }
 
-        let row = self.store.get_pool(pool_id).await?;
-        if let Some(ref pool) = row {
-            self.pool_cache.lock().await.put(pool_id.to_string(), pool.clone());
-        }
-        Ok(row)
-    }
-
-    async fn decimals_for(&self, coin_type: &str) -> u32 {
-        match self.store.get_token_decimals(coin_type).await {
-            Ok(Some(d)) => d as u32,
-            _ => {
-                self.metrics
-                    .swap_missing_decimals
-                    .with_label_values(&[coin_type])
-                    .inc();
-                9
-            }
-        }
+        let message_id_key = format!(
+            "{tx_digest}:{event_seq}:{protocol_slug}:{}",
+            FactTopic::SwapNormalized.as_str()
+        );
+        Ok(NormalizeOutcome::Published(MessageEnvelope::new(
+            &message_id_key,
+            normalized,
+        )))
     }
 }
 

@@ -47,6 +47,8 @@ mod tests {
             amount_base: Decimal::ONE,
             amount_quote: Decimal::ONE,
             price_quote_per_base: Decimal::from(2),
+            price_usd_per_base: None,
+            amount_usd: None,
             fee_amount: None,
             vault_a_raw: Some("1000000000".into()),
             vault_b_raw: Some("2000000000".into()),

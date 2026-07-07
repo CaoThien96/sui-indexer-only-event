@@ -1,15 +1,16 @@
+use std::time::Duration;
+
 use anyhow::Result;
-use indexer_store::{FactTopic, KafkaFactReader, parse_envelope, wait_for_topics_available};
+use indexer_store::{FactTopic, KafkaFactReader, wait_for_topics_available};
 use prometheus::Registry;
-use rdkafka::Message;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use sui_processors::catalog::{handle_pool_message, handle_token_metadata_message};
 use sui_processors::config::{
     self, catalog_consumer_group, database_url, kafka_brokers, kafka_client_id, metrics_address,
 };
 use sui_processors::metrics::ProcessorMetrics;
-use sui_processors::runtime::{kafka_backoff_resubscribe, serve_metrics};
+use sui_processors::runtime::{drain_kafka_pipeline, serve_metrics, spawn_kafka_poll_task};
 use sui_processors::store::CatalogStore;
 
 #[tokio::main]
@@ -22,6 +23,10 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    let max_poll_ms = std::env::var("KAFKA_MAX_POLL_INTERVAL_MS")
+        .unwrap_or_else(|_| "900000".to_string());
+    info!(%max_poll_ms, "catalog-worker kafka consumer tuning");
 
     let db_url = database_url()?;
     let brokers = kafka_brokers()?;
@@ -42,124 +47,96 @@ async fn main() -> Result<()> {
     let metrics = ProcessorMetrics::new(&registry)?;
     let metrics_addr = metrics_address();
 
-    let pool_reader = KafkaFactReader::new(
-        &brokers,
-        &format!("{group}-pools"),
-        &kafka_client_id("catalog-pools"),
-    )?;
-    pool_reader.subscribe(&[FactTopic::PoolRaw])?;
-
-    let token_reader = KafkaFactReader::new(
-        &brokers,
-        &format!("{group}-tokens"),
-        &kafka_client_id("catalog-tokens"),
-    )?;
-    token_reader.subscribe(&[FactTopic::TokenMetadataRaw])?;
-
     let store_pools = store.clone();
     let metrics_pools = metrics.clone();
-    let pool_topics = [FactTopic::PoolRaw];
+    let brokers_pools = brokers.clone();
+    let group_pools = format!("{group}-pools");
     let pool_task = tokio::spawn(async move {
-        loop {
-            let message = match pool_reader.recv_raw().await {
-                Ok(m) => m,
-                Err(e) => {
-                    error!(error = %e, "Pool consumer recv failed");
-                    kafka_backoff_resubscribe(&pool_reader, &pool_topics, "catalog-pools").await;
-                    continue;
-                }
-            };
+        let pool_reader = KafkaFactReader::new(
+            &brokers_pools,
+            &group_pools,
+            &kafka_client_id("catalog-pools"),
+        )?;
+        pool_reader.subscribe(&[FactTopic::PoolRaw]).await?;
 
-            let envelope = match parse_envelope(&message) {
-                Ok(e) => e,
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        topic = message.topic(),
-                        partition = message.partition(),
-                        offset = message.offset(),
-                        "Skipping invalid pool envelope"
-                    );
-                    metrics_pools
-                        .decode_errors
-                        .with_label_values(&["catalog-worker", FactTopic::PoolRaw.as_str()])
-                        .inc();
-                    let _ = pool_reader.commit_message(&message);
-                    continue;
-                }
-            };
-
-            if let Err(e) =
-                handle_pool_message(&store_pools, &metrics_pools, &envelope).await
-            {
-                error!(error = %e, "Failed to handle pool message");
-                metrics_pools
+        let rx = spawn_kafka_poll_task(pool_reader.clone(), &[FactTopic::PoolRaw], "catalog-pools");
+        let metrics = metrics_pools.clone();
+        drain_kafka_pipeline(
+            &pool_reader,
+            rx,
+            "catalog-pools",
+            "catalog-worker",
+            move |worker| {
+                metrics
                     .decode_errors
-                    .with_label_values(&["catalog-worker", FactTopic::PoolRaw.as_str()])
+                    .with_label_values(&[worker, FactTopic::PoolRaw.as_str()])
                     .inc();
-            } else if let Err(e) = pool_reader.commit_message(&message) {
-                error!(error = %e, "Failed to commit pool offset");
-            }
-        }
+            },
+            |envelope| {
+                let store = store_pools.clone();
+                let metrics = metrics_pools.clone();
+                async move { handle_pool_message(&store, &metrics, &envelope).await }
+            },
+        )
+        .await;
+        Ok::<(), anyhow::Error>(())
     });
 
     let store_tokens = store.clone();
     let metrics_tokens = metrics.clone();
-    let token_topics = [FactTopic::TokenMetadataRaw];
+    let brokers_tokens = brokers.clone();
+    let group_tokens = format!("{group}-tokens");
     let token_task = tokio::spawn(async move {
-        loop {
-            let message = match token_reader.recv_raw().await {
-                Ok(m) => m,
-                Err(e) => {
-                    error!(error = %e, "Token consumer recv failed");
-                    kafka_backoff_resubscribe(&token_reader, &token_topics, "catalog-tokens").await;
-                    continue;
-                }
-            };
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
-            let envelope = match parse_envelope(&message) {
-                Ok(e) => e,
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        topic = message.topic(),
-                        partition = message.partition(),
-                        offset = message.offset(),
-                        "Skipping invalid token envelope"
-                    );
-                    metrics_tokens
-                        .decode_errors
-                        .with_label_values(&[
-                            "catalog-worker",
-                            FactTopic::TokenMetadataRaw.as_str(),
-                        ])
-                        .inc();
-                    let _ = token_reader.commit_message(&message);
-                    continue;
-                }
-            };
+        let token_reader = KafkaFactReader::new(
+            &brokers_tokens,
+            &group_tokens,
+            &kafka_client_id("catalog-tokens"),
+        )?;
+        token_reader
+            .subscribe(&[FactTopic::TokenMetadataRaw])
+            .await?;
 
-            if let Err(e) =
-                handle_token_metadata_message(&store_tokens, &metrics_tokens, &envelope).await
-            {
-                error!(error = %e, "Failed to handle token metadata message");
-                metrics_tokens
+        let rx = spawn_kafka_poll_task(
+            token_reader.clone(),
+            &[FactTopic::TokenMetadataRaw],
+            "catalog-tokens",
+        );
+        let metrics = metrics_tokens.clone();
+        drain_kafka_pipeline(
+            &token_reader,
+            rx,
+            "catalog-tokens",
+            "catalog-worker",
+            move |worker| {
+                metrics
                     .decode_errors
-                    .with_label_values(&[
-                        "catalog-worker",
-                        FactTopic::TokenMetadataRaw.as_str(),
-                    ])
+                    .with_label_values(&[worker, FactTopic::TokenMetadataRaw.as_str()])
                     .inc();
-            } else if let Err(e) = token_reader.commit_message(&message) {
-                error!(error = %e, "Failed to commit token offset");
-            }
-        }
+            },
+            |envelope| {
+                let store = store_tokens.clone();
+                let metrics = metrics_tokens.clone();
+                async move { handle_token_metadata_message(&store, &metrics, &envelope).await }
+            },
+        )
+        .await;
+        Ok::<(), anyhow::Error>(())
     });
 
     info!("catalog-worker started");
     tokio::select! {
-        _ = pool_task => {},
-        _ = token_task => {},
+        result = pool_task => {
+            if let Ok(Err(e)) = result {
+                error!(error = %e, "Pool consumer task exited with error");
+            }
+        },
+        result = token_task => {
+            if let Ok(Err(e)) = result {
+                error!(error = %e, "Token consumer task exited with error");
+            }
+        },
         result = serve_metrics(registry, &metrics_addr) => result?,
     }
 

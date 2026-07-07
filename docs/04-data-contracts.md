@@ -12,7 +12,7 @@ Kafka topics, normalized schemas, and core database tables.
 | `dex.swap.raw.v1` | 1 | indexer | swap-normalizer | 7d |
 | `dex.pool.raw.v1` | 1 | indexer | catalog-worker | 7d |
 | `token.metadata.raw.v1` | 1 | indexer | catalog-worker | 7d |
-| `dex.swap.normalized.v1` | 2 | swap-normalizer | ohlc, volume, liquidity | 7d |
+| `dex.swap.normalized.v1` | 2 | swap-normalizer | volume-engine | 7d |
 | `coin.balance_change.v1` | 4 | balance-extractor | holder-aggregator, graph-builder | 14d |
 
 **Partition key:**
@@ -87,6 +87,8 @@ Produced by `swap-normalizer`. All downstream engines consume only this topic.
   "sqrt_price_before": "2735842178263405965",
   "sqrt_price_after": "2736053497612767632",
   "price_quote_per_base": "0.001234",
+  "price_usd_per_base": "0.000987",
+  "amount_usd": "2.20",
   "quote_coin_type": "0x2::sui::SUI",
   "base_coin_type": "0x...::coin::TOKEN",
   "vault_a_raw": "1318800564561393",
@@ -103,7 +105,8 @@ Produced by `swap-normalizer`. All downstream engines consume only this topic.
 
 **Price rule (frozen):**
 - `quote_coin_type` = SUI or USDC if pool contains either; else `coin_type_a` as quote
-- `price_quote_per_base` computed from `sqrt_price_after`, decimals, and `a_to_b`
+- `price_quote_per_base` computed from trade amounts (execution price)
+- `price_usd_per_base` / `amount_usd` enriched in `swap-normalizer` when quote is SUI/USDC and oracle data exists (`sui_usd_1m` for SUI quote, `1` for USDC quote); omitted for exotic quote pairs
 
 ---
 
@@ -257,24 +260,26 @@ CREATE TABLE swaps_fact (
 SELECT create_hypertable('swaps_fact', 'time');
 ```
 
-### `ohlc_1m`
+### `token_ohlc_usd_1m` … `token_ohlc_usd_24h`
+
+Token/USD OHLC hypertables (one per interval: `1m`, `5m`, `15m`, `30m`, `1h`, `4h`, `24h`). Written directly by **volume-engine** on each inserted swap with USD fields.
 
 ```sql
-CREATE TABLE ohlc_1m (
+CREATE TABLE token_ohlc_usd_1m (
   bucket              TIMESTAMPTZ NOT NULL,
-  pool_id             TEXT NOT NULL,
   base_coin_type      TEXT NOT NULL,
-  quote_coin_type     TEXT NOT NULL,
-  open                NUMERIC NOT NULL,
-  high                NUMERIC NOT NULL,
-  low                 NUMERIC NOT NULL,
-  close               NUMERIC NOT NULL,
-  volume_quote        NUMERIC NOT NULL,
+  open_usd            NUMERIC NOT NULL,
+  high_usd            NUMERIC NOT NULL,
+  low_usd             NUMERIC NOT NULL,
+  close_usd           NUMERIC NOT NULL,
+  volume_usd          NUMERIC NOT NULL,
   trade_count         INTEGER NOT NULL,
-  PRIMARY KEY (bucket, pool_id, base_coin_type, quote_coin_type)
+  PRIMARY KEY (bucket, base_coin_type)
 );
-SELECT create_hypertable('ohlc_1m', 'bucket');
+SELECT create_hypertable('token_ohlc_usd_1m', 'bucket');
 ```
+
+Higher intervals use the same column layout on `token_ohlc_usd_5m`, `token_ohlc_usd_15m`, `token_ohlc_usd_30m`, `token_ohlc_usd_1h`, `token_ohlc_usd_4h`, `token_ohlc_usd_24h`.
 
 ### `pool_liquidity`
 
@@ -295,7 +300,7 @@ SELECT create_hypertable('pool_liquidity', 'time');
 
 ## 9. ClickHouse tables (cold)
 
-Mirror `swaps_fact`, `ohlc_1m`, and (Phase 5) `transfer_edges`.
+Mirror `swaps_fact`, `token_ohlc_usd_*` (all intervals), and (Phase 5) `transfer_edges`.
 
 ### `swaps_fact`
 
@@ -318,22 +323,23 @@ CREATE TABLE swaps_fact (
 ORDER BY (base_coin_type, time, tx_digest, event_seq, protocol);
 ```
 
-### `ohlc_1m`
+### `token_ohlc_usd_1m` … `token_ohlc_usd_24h`
 
 ```sql
-CREATE TABLE ohlc_1m (
+CREATE TABLE token_ohlc_usd_1m (
   bucket DateTime64(3),
-  pool_id String,
   base_coin_type String,
-  quote_coin_type String,
-  open String,
-  high String,
-  low String,
-  close String,
-  volume_quote String,
+  open_usd String,
+  high_usd String,
+  low_usd String,
+  close_usd String,
+  volume_usd String,
   trade_count Int32
 ) ENGINE = ReplacingMergeTree()
-ORDER BY (base_coin_type, pool_id, bucket);
+ORDER BY (base_coin_type, bucket);
+```
+
+Same layout for `token_ohlc_usd_5m` through `token_ohlc_usd_24h`.
 ```
 
 ### `transfer_edges` (Phase 5)
@@ -422,13 +428,13 @@ Query: `q?` (substring on `coin_type`, `symbol`, `name`), `limit` (default 50, m
 }
 ```
 
-### `GET /v1/pools/{pool_id}/ohlc`
+### `GET /v1/tokens/{coin_type}/ohlc`
 
-Query: `interval` = `1m|5m|1h|4h|24h`, `from`, `to` (ISO-8601), optional `base_coin_type`.
+Query: `interval` = `1m|5m|15m|30m|1h|4h|24h`, `from`, `to` (ISO-8601). Hot path: TimescaleDB; cold path (> `HOT_STORAGE_DAYS`): ClickHouse `token_ohlc_usd_{interval}`.
 
 ```json
 {
-  "pool_id": "0x...",
+  "coin_type": "0x...::coin::TOKEN",
   "interval": "1h",
   "bars": [
     {
@@ -443,6 +449,8 @@ Query: `interval` = `1m|5m|1h|4h|24h`, `from`, `to` (ISO-8601), optional `base_c
   ]
 }
 ```
+
+`volume_quote` carries USD volume for token charts.
 
 ### `GET /v1/tokens/{coin_type}/swaps`
 
