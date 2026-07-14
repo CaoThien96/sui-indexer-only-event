@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use crate::bot::debug_log::agent_log;
 use crate::bot::state::Dex;
 use crate::bot::token_type::{normalize_coin_type, pick_non_sui_token, symbol_from_coin_type};
 use crate::provider::SuiRpcClient;
@@ -55,35 +54,7 @@ pub async fn parse_create_pool(
         return Ok(None);
     }
 
-    let reserve = match rpc.get_pool_coin_b(&pool).await {
-        Ok(v) => v,
-        Err(err) => {
-            // #region agent log
-            agent_log(
-                "H1",
-                "create_pool.rs:reserve_rpc_err",
-                "get_pool_coin_b failed",
-                serde_json::json!({
-                    "pool": pool,
-                    "error": err.to_string(),
-                }),
-            );
-            // #endregion
-            0
-        }
-    };
-    // #region agent log
-    agent_log(
-        "H1",
-        "create_pool.rs:reserve",
-        "create pool reserve from rpc",
-        serde_json::json!({
-            "pool": pool,
-            "token": normalize_coin_type(&token),
-            "reserve": reserve.to_string(),
-        }),
-    );
-    // #endregion
+    let reserve = rpc.get_pool_coin_b(&pool).await.unwrap_or(0);
     let symbol = symbol_from_coin_type(&token);
 
     Ok(Some(CreatePoolEvent {

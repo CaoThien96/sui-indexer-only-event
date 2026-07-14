@@ -16,10 +16,6 @@ use crate::telegram_format::{
 };
 use crate::telegram_notify;
 
-// #region agent log
-use crate::bot::debug_log::agent_log;
-// #endregion
-
 #[derive(Debug, Clone, Default)]
 pub struct SnipRunOptions {
     pub skip_buy: bool,
@@ -124,18 +120,6 @@ pub async fn run_snip(
         && !options.skip_lp
         && let Some(vault) = &runtime.snip_vault
     {
-        // #region agent log
-        agent_log(
-            "H5",
-            "snip.rs:run_snip",
-            "vault snip path",
-            serde_json::json!({
-                "dry_run": options.dry_run,
-                "buy_amount": buy_amount,
-                "dex": format!("{:?}", dex),
-            }),
-        );
-        // #endregion
         match vault
             .snip_and_lp(runtime, store, dex, &token, pool, buy_amount, options.dry_run)
             .await
@@ -158,36 +142,11 @@ pub async fn run_snip(
                 );
             }
             Err(err) => {
-                // #region agent log
-                agent_log(
-                    "H1",
-                    "snip.rs:run_snip",
-                    "vault snip failed",
-                    serde_json::json!({
-                        "error": err.to_string(),
-                        "dry_run": options.dry_run,
-                    }),
-                );
-                // #endregion
                 warn!(?err, symbol = %symbol, "snip vault buy+lp failed");
                 return Err(SnipFailure::Buy(err));
             }
         }
     }
-
-    // #region agent log
-    agent_log(
-        "H5",
-        "snip.rs:run_snip",
-        "agg_swap path",
-        serde_json::json!({
-            "dry_run": options.dry_run,
-            "skip_buy": options.skip_buy,
-            "skip_lp": options.skip_lp,
-            "has_vault": runtime.snip_vault.is_some(),
-        }),
-    );
-    // #endregion
 
     let mut buy_digest: Option<String> = None;
 

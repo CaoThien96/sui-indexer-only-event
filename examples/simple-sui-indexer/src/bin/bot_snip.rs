@@ -23,10 +23,6 @@ use simple_sui_indexer::bot::snip::{run_snip, SnipRunOptions};
 use simple_sui_indexer::bot::state::{BotStateStore, Dex};
 use simple_sui_indexer::bootstrap;
 
-// #region agent log
-use simple_sui_indexer::bot::debug_log::agent_log;
-// #endregion
-
 #[derive(Parser, Debug)]
 #[command(name = "bot-snip")]
 struct Args {
@@ -70,37 +66,7 @@ async fn main() -> Result<()> {
     bootstrap::log_dotenv_load(&dotenv);
 
     let args = Args::parse();
-
-    // #region agent log
-    agent_log(
-        "H4",
-        "bot_snip.rs:main",
-        "cli args",
-        serde_json::json!({
-            "pool": args.pool,
-            "token": args.token,
-            "dex": format!("{:?}", args.dex),
-            "dry_run": args.dry_run,
-            "buy_only": args.buy_only,
-            "lp_only": args.lp_only,
-        }),
-    );
-    // #endregion
-
     let runtime = BotRuntime::init().await?;
-
-    // #region agent log
-    agent_log(
-        "H4",
-        "bot_snip.rs:main",
-        "runtime ready",
-        serde_json::json!({
-            "vault_address": runtime.vault.address_string(),
-            "use_snip_vault": runtime.snip_vault.is_some(),
-            "snip_buy_amount": runtime.config.snip_buy_amount,
-        }),
-    );
-    // #endregion
 
     tracing::info!(
         pool = %args.pool,
@@ -139,17 +105,7 @@ async fn main() -> Result<()> {
         },
     )
     .await
-    .map_err(|e| {
-        // #region agent log
-        agent_log(
-            "H1",
-            "bot_snip.rs:main",
-            "run_snip error",
-            serde_json::json!({ "error": e.to_string() }),
-        );
-        // #endregion
-        anyhow::anyhow!("{e}")
-    })?;
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     if args.dry_run {
         println!("snip dry-run finished OK (no tx submitted)");

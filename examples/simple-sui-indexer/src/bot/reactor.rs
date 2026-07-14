@@ -6,7 +6,6 @@ use tracing::{debug, info};
 
 use crate::bot::cleanup::spawn_processed_swaps_cleanup;
 use crate::bot::config::{BotConfig, BotRuntime};
-use crate::bot::debug_log::agent_log;
 use crate::bot::event_types;
 use crate::bot::parsers::{find_initial_pool_candidates, parse_swap};
 use crate::bot::sell::process_swap_old_token;
@@ -123,18 +122,6 @@ impl BotReactor {
             if candidate.reserve_sui <= config.min_pool_reserve_sui
                 || config.is_blacklisted(&candidate.token)
             {
-                agent_log(
-                    "H1",
-                    "reactor.rs:handle_initial_pools:skip",
-                    "skip initial pool reserve/blacklist",
-                    serde_json::json!({
-                        "tx_digest": events[0].tx_digest,
-                        "pool": candidate.pool,
-                        "token": candidate.token,
-                        "reserve_sui": candidate.reserve_sui.to_string(),
-                        "min_pool_reserve_sui": config.min_pool_reserve_sui.to_string(),
-                    }),
-                );
                 debug!(
                     token = %candidate.token,
                     reserve = candidate.reserve_sui,
@@ -222,21 +209,6 @@ impl BotReactor {
                 &ctx.tx_digest,
             )
             .await?;
-
-        agent_log(
-            "H4",
-            "reactor.rs:try_schedule_snip",
-            "scheduling snip",
-            serde_json::json!({
-                "tx_digest": ctx.tx_digest,
-                "event_seq": ctx.event_seq,
-                "source": source,
-                "pool": pool,
-                "token": token,
-                "symbol": symbol,
-                "reserve": reserve.to_string(),
-            }),
-        );
 
         info!(
             token = %token,

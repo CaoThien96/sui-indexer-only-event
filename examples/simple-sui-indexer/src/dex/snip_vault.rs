@@ -19,10 +19,6 @@ use crate::dex::agg_swap::{clock_arg};
 use crate::dex::turbos_contract::{self, MINT_DEADLINE_MS};
 use crate::dex::turbos_math;
 
-// #region agent log
-use crate::bot::debug_log::agent_log;
-// #endregion
-
 const CETUS_GLOBAL_CONFIG: &str =
     "0xdaa46292632c3c4d8f31f23ea0f9b36a28ff3677e9684980e4438403a67a3d8f";
 const CETUS_PARTNER: &str =
@@ -330,23 +326,6 @@ impl SnipVaultClient {
         let amount_b_min = turbos_math::minimum_amount(amount_b, TURBOS_SLIPPAGE_PERCENT);
         let deadline = deadline_ms(MINT_DEADLINE_MS)?;
 
-        // #region agent log
-        agent_log(
-            "H2",
-            "snip_vault.rs:snip_and_lp_turbos",
-            "ptb inputs",
-            serde_json::json!({
-                "buy_amount": buy_amount,
-                "amount_a": amount_a,
-                "amount_b": amount_b,
-                "gas_budget": self.gas_budget,
-                "dry_run": dry_run,
-                "coin_type_a": coin_type_a,
-                "coin_type_b": coin_type_b,
-            }),
-        );
-        // #endregion
-
         let mut ptb = ProgrammableTransactionBuilder::new();
         let buy_amt = ptb.pure(buy_amount)?;
         let buy_sui = ptb.command(Command::SplitCoins(Argument::GasCoin, vec![buy_amt]));
@@ -434,18 +413,6 @@ impl SnipVaultClient {
             rpc.object_arg_cached(CETUS_GLOBAL_CONFIG, false),
             rpc.object_arg_cached(CETUS_PARTNER, true),
         )?;
-        // #region agent log
-        agent_log(
-            "H1",
-            "snip_vault.rs:sell_cetus",
-            "sell object args resolved",
-            serde_json::json!({
-                "partner_mutable": true,
-                "pool": pool,
-            }),
-        );
-        // #endregion
-
         let mut ptb = ProgrammableTransactionBuilder::new();
         let vault_arg = ptb.obj(vault_arg)?;
         let config = ptb.obj(config)?;
@@ -566,20 +533,6 @@ impl SnipVaultClient {
                 runtime.rpc.get_chain_identifier(),
             )?;
             let nonce = self.sell_nonce.fetch_add(1, Ordering::Relaxed);
-            // #region agent log
-            agent_log(
-                "H2",
-                "snip_vault.rs:execute_ptb",
-                "sell uses address balance gas",
-                serde_json::json!({
-                    "label": label,
-                    "fast_submit": fast_submit,
-                    "gas_price": gas_price,
-                    "current_epoch": current_epoch,
-                    "nonce": nonce,
-                }),
-            );
-            // #endregion
             let chain = ChainIdentifier::from_chain_short_id(&chain_id)
                 .context("unsupported chain identifier for address-balance gas")?;
             TransactionData::V1(TransactionDataV1 {
